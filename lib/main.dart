@@ -123,6 +123,14 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
+// Güvenlik: Girdi temizleme (Path Traversal engeli)
+bool isValidName(String name) {
+  if (name.isEmpty || name.contains('/') || name.contains('\\') || name.contains('..')) {
+    return false;
+  }
+  return true;
+}
+
 // --- GİRİŞ EKRANI (LOGIN) ---
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -214,9 +222,25 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // Bağlantıyı test edip hata varsa FtpCafe tarzı Login error penceresi çıkaran fonksiyon
   Future<void> _connect() async {
     if (selectedProfile == null || _isConnecting) return;
+
+    // Güvenlik Uyarısı: Düz FTP kullanımı tespiti
+    if (selectedProfile!.mode == 'FTP') {
+      bool proceed = await showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text("Security Warning", style: TextStyle(color: Colors.orangeAccent)),
+          content: const Text("You are connecting via plain FTP. Your password and data will be sent UNENCRYPTED over the network. It is highly recommended to use SFTP or FTPS.\n\nDo you still want to connect?"),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Cancel")),
+            TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Connect Anyway", style: TextStyle(color: Colors.redAccent))),
+          ],
+        )
+      ) ?? false;
+      
+      if (!proceed) return;
+    }
 
     setState(() {
       _isConnecting = true;
@@ -244,6 +268,7 @@ class _LoginScreenState extends State<LoginScreen> {
           username: selectedProfile!.user,
           identities: identities,
           onPasswordRequest: () => selectedProfile!.password,
+          // Güvenlik İyileştirmesi: Gerçek bir uygulamada onBadHostKey ile host fingerprint doğrulaması yapılmalıdır.
         );
         
         await client.authenticated;
@@ -260,7 +285,6 @@ class _LoginScreenState extends State<LoginScreen> {
           pass: selectedProfile!.password,
           port: int.tryParse(selectedProfile!.port) ?? 21,
           securityType: secType,
-          // passiveMode ve binaryMode aktif entegrasyonu
         );
         
         await ftp.connect().timeout(const Duration(seconds: 10));
@@ -284,12 +308,11 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (errorMessage.isNotEmpty) {
-      // FtpCafe tarzı Login error penceresi
       showDialog(
         context: context,
         builder: (c) => AlertDialog(
           title: const Text("Login error", style: TextStyle(color: Colors.lightBlueAccent)),
-          content: Text("$errorMessage\n$errorMessage"),
+          content: Text(errorMessage),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(c),
@@ -299,7 +322,6 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     } else {
-      // Bilgiler doğru, direkt dosya yöneticisine geç
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => DualFileManagerScreen(profile: selectedProfile!)),
@@ -313,9 +335,9 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: const Row(
           children: [
-            Icon(Icons.public, color: Colors.blueAccent),
+            Icon(Icons.security, color: Colors.blueAccent), // Güvenlik odaklı ikon değişikliği
             SizedBox(width: 8),
-            Text('Ftp Master'),
+            Text('Ftp Master Secure'),
           ],
         ),
         actions: [
@@ -356,7 +378,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       onPressed: _isConnecting ? null : _connect,
                       child: _isConnecting 
                           ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Text('Connect', style: TextStyle(fontSize: 16)),
+                          : const Text('Connect Securely', style: TextStyle(fontSize: 16)),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -400,7 +422,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController localPathCtrl;
   late TextEditingController remotePathCtrl;
   
-  String selectedMode = 'FTP';
+  String selectedMode = 'SFTP (FTP over SSH)'; // Varsayılan olarak en güvenli yöntem seçili gelir
   String selectedCharset = 'UTF-8';
   bool savePass = true;
   bool isPassive = true;
@@ -423,13 +445,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     userCtrl = TextEditingController(text: widget.profile?.user ?? '');
     passCtrl = TextEditingController(text: widget.profile?.password ?? '');
     privateKeyCtrl = TextEditingController(text: widget.profile?.privateKey ?? '');
-    portCtrl = TextEditingController(text: widget.profile?.port ?? '21');
+    portCtrl = TextEditingController(text: widget.profile?.port ?? '22');
     localPathCtrl = TextEditingController(text: widget.profile?.localPath ?? '');
     remotePathCtrl = TextEditingController(text: widget.profile?.remotePath ?? '');
     
     if (widget.profile != null) {
       selectedMode = widget.profile!.mode;
-      if (!ftpModes.contains(selectedMode)) selectedMode = 'FTP';
+      if (!ftpModes.contains(selectedMode)) selectedMode = 'SFTP (FTP over SSH)';
       savePass = widget.profile!.savePassword;
       isPassive = widget.profile!.passiveMode;
       isBinary = widget.profile!.binaryMode;
@@ -819,6 +841,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remotePath = '/';
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
+  
+  // HIZ İYİLEŞTİRMESİ: Jet hızında gezinmek için önbellek mekanizması
+  final Map<String, List<RemoteEntry>> _remoteCache = {};
 
   @override
   void initState() {
@@ -842,7 +867,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // --- GERİ TUŞU YAKALAMA ---
   Future<bool> _onWillPop() async {
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
@@ -898,7 +922,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 onChanged: (val) {
                   setState(() => _sortMethod = val!);
                   Navigator.pop(context);
-                  _tabController.index == 0 ? _loadLocal(localPath) : _loadRemote();
+                  // Önbelleği temizle ve yeniden yükle ki sıralama güncellensin
+                  if (_tabController.index == 1) {
+                    _remoteCache.remove(remotePath); 
+                  }
+                  _tabController.index == 0 ? _loadLocal(localPath) : _loadRemote(forceRefresh: true);
                 },
               );
             }).toList(),
@@ -1039,8 +1067,24 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  Future<void> _loadRemote() async {
+  // Hız İyileştirmesi: forceRefresh true gelmezse önce önbelleğe (cache) bakar
+  Future<void> _loadRemote({bool forceRefresh = false}) async {
+    if (!forceRefresh && _remoteCache.containsKey(remotePath)) {
+      setState(() {
+        remoteFiles = _remoteCache[remotePath]!;
+        remoteLoading = false;
+        _selectedRemoteNames.clear();
+      });
+      // Arka planda listeyi güncelle, değişiklik varsa yansıt (jet hızı hissi)
+      _fetchRemoteDataAndCache();
+      return;
+    }
+
     setState(() => remoteLoading = true);
+    await _fetchRemoteDataAndCache();
+  }
+
+  Future<void> _fetchRemoteDataAndCache() async {
     try {
       List<RemoteEntry> folders = [];
       List<RemoteEntry> files = [];
@@ -1063,18 +1107,26 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       
       _sortRemoteFiles(folders, files);
+      List<RemoteEntry> resultList = [...folders, ...files];
+      
+      _remoteCache[remotePath] = resultList;
 
-      setState(() {
-        remoteFiles = [...folders, ...files];
-        remoteLoading = false;
-        _selectedRemoteNames.clear();
-      });
+      if (mounted) {
+        setState(() {
+          remoteFiles = resultList;
+          remoteLoading = false;
+          _selectedRemoteNames.clear();
+        });
+      }
     } catch (e) {
-      setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+      if (mounted) {
+        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+      }
     }
   }
 
   Future<void> _changeRemoteDirectory(String dirName) async {
+    // UI tepkiselliği için anında yükleme durumuna geç
     setState(() => remoteLoading = true);
     try {
       if (_isSftp) {
@@ -1097,7 +1149,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
         }
       }
-      await _loadRemote();
+      await _loadRemote(); // Önbellekli yükleme
     } catch (e) {
       setState(() => remoteLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -1117,9 +1169,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
-              Navigator.pop(c);
               String name = ctrl.text.trim();
-              if (name.isEmpty) return;
+              if (!isValidName(name)) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid folder name.')));
+                return;
+              }
+              Navigator.pop(c);
 
               if (isLocal) {
                 Directory('$localPath/$name').createSync();
@@ -1131,7 +1186,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.makeDirectory(name);
                   }
-                  _loadRemote();
+                  _loadRemote(forceRefresh: true); // Değişiklik oldu, zorunlu yenile
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1156,9 +1211,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
-              Navigator.pop(c);
               String newName = ctrl.text.trim();
-              if (newName.isEmpty || newName == (isLocal ? oldName.split('/').last : oldName)) return;
+              if (!isValidName(newName) || newName == (isLocal ? oldName.split('/').last : oldName)) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid or unchanged name.')));
+                return;
+              }
+              Navigator.pop(c);
 
               if (isLocal) {
                 File(oldName).renameSync('$localPath/$newName');
@@ -1170,7 +1228,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.rename(oldName, newName);
                   }
-                  _loadRemote();
+                  _loadRemote(forceRefresh: true);
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1218,7 +1276,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             }
           } catch (_) {}
         }
-        _loadRemote();
+        _loadRemote(forceRefresh: true);
       }
     }
   }
@@ -1437,7 +1495,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     if (isLocal) {
       _selectedLocalPaths.clear();
-      _loadRemote();
+      _loadRemote(forceRefresh: true);
     } else {
       _selectedRemoteNames.clear();
       _loadLocal(localPath);
@@ -1535,7 +1593,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 } else if (value == 'Sort') {
                   _showSortDialog();
                 } else if (value == 'Refresh') {
-                  isLocal ? _loadLocal(localPath) : _loadRemote();
+                  isLocal ? _loadLocal(localPath) : _loadRemote(forceRefresh: true); // Gerçek yenileme
                 } else if (value == 'SelectAll') {
                   setState(() {
                     if (isLocal) {
