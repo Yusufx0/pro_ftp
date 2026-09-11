@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -222,12 +223,20 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     String errorMessage = "";
+    int portToUse = int.tryParse(selectedProfile!.port) ?? 21;
+
+    // FTPS WRONG_VERSION_NUMBER hatasını engellemek için akıllı port yönlendirmesi
+    if (selectedProfile!.mode.contains('FTPS') && portToUse == 21) {
+      portToUse = 990;
+    } else if (selectedProfile!.mode.contains('SFTP') && portToUse == 21) {
+      portToUse = 22;
+    }
 
     try {
       if (selectedProfile!.mode.contains('SFTP')) {
         final socket = await SSHSocket.connect(
           selectedProfile!.host, 
-          int.tryParse(selectedProfile!.port) ?? 22
+          portToUse
         ).timeout(const Duration(seconds: 10));
 
         List<SSHKeyPair> identities = [];
@@ -257,11 +266,12 @@ class _LoginScreenState extends State<LoginScreen> {
           selectedProfile!.host,
           user: selectedProfile!.user,
           pass: selectedProfile!.password,
-          port: int.tryParse(selectedProfile!.port) ?? 21,
+          port: portToUse,
           securityType: secType,
+          timeout: 15, // Kütüphane bazlı kilitlenmeyi engellemek için zaman aşımı eklendi
         );
         
-        await ftp.connect().timeout(const Duration(seconds: 10));
+        await ftp.connect().timeout(const Duration(seconds: 15));
         await ftp.disconnect();
       }
     } catch (e) {
@@ -667,8 +677,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         if (val != null) {
                           setState(() {
                             selectedMode = val;
-                            if (selectedMode == 'SFTP (FTP over SSH)') portCtrl.text = '22';
-                            else if (portCtrl.text == '22') portCtrl.text = '21';
+                            // Akıllı port düzeltici: Profil düzenlerken doğru porta geçirir
+                            if (selectedMode == 'SFTP (FTP over SSH)') {
+                              portCtrl.text = '22';
+                            } else if (selectedMode == 'FTPS (Implicit secure FTP)') {
+                              portCtrl.text = '990'; 
+                            } else if (portCtrl.text == '22' || portCtrl.text == '990') {
+                              portCtrl.text = '21';
+                            }
                           });
                         }
                       },
@@ -816,13 +832,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
   
-  // Önbellek Sistemi
   final Map<String, List<RemoteEntry>> _remoteDirectoryCache = {};
-
-  // Ağ çakışmasını engelleme kilidi (Arka plan görevleri için)
   bool _isNetworkBusy = false;
-  // Hızlı tıklamalarda eski kalan görevleri iptal etmek için ID
   int _currentNetworkRequestId = 0;
+  bool _isDisconnectDialogShowing = false;
 
   @override
   void initState() {
@@ -846,6 +859,53 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
+  // --- BAĞLANTI KOPMA YAKALAYICI ---
+  bool _isConnectionError(dynamic e) {
+    String err = e.toString().toLowerCase();
+    // timeout eklendi, böylece sonsuz dönme yerine direkt kopma penceresini açacak
+    return err.contains('socket') || err.contains('closed') || err.contains('pipe') || 
+           err.contains('disconnect') || err.contains('connection') || err.contains('timeout');
+  }
+
+  void _showDisconnectDialog() {
+    if (_isDisconnectDialogShowing) return;
+    _isDisconnectDialogShowing = true;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false, 
+      builder: (c) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text('Connection Lost', style: TextStyle(color: Colors.redAccent)),
+          ],
+        ),
+        content: const Text('The connection to the server has been lost.\n\nWould you like to stay offline on this screen or logout?'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _isDisconnectDialogShowing = false;
+              Navigator.pop(c); 
+            },
+            child: const Text('Stay'),
+          ),
+          TextButton(
+            onPressed: () {
+              _isDisconnectDialogShowing = false;
+              Navigator.pop(c); 
+              _ftpConnect?.disconnect();
+              _sshClient?.close();
+              Navigator.pop(context); 
+            },
+            child: const Text('Logout', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      )
+    ).then((_) => _isDisconnectDialogShowing = false);
+  }
+
   Future<bool> _onWillPop() async {
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
@@ -857,7 +917,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     } else {
       if (remotePath.isNotEmpty && remotePath != '/') {
-        _changeRemoteDirectory('..'); // Artık senkron ve anında çalışıyor
+        _changeRemoteDirectory('..'); 
         return false;
       }
     }
@@ -998,9 +1058,14 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
   Future<void> _initRemote() async {
     setState(() { remoteLoading = true; remoteError = ''; });
+    
+    int portToUse = int.tryParse(widget.profile.port) ?? 21;
+    if (widget.profile.mode.contains('FTPS') && portToUse == 21) portToUse = 990;
+    if (widget.profile.mode.contains('SFTP') && portToUse == 21) portToUse = 22;
+
     try {
       if (_isSftp) {
-        final socket = await SSHSocket.connect(widget.profile.host, int.tryParse(widget.profile.port) ?? 22);
+        final socket = await SSHSocket.connect(widget.profile.host, portToUse).timeout(const Duration(seconds: 15));
         List<SSHKeyPair> identities = [];
         if (widget.profile.privateKey.isNotEmpty) {
           final keyFile = File(widget.profile.privateKey);
@@ -1024,21 +1089,23 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           widget.profile.host,
           user: widget.profile.user,
           pass: widget.profile.password,
-          port: int.tryParse(widget.profile.port) ?? 21,
-          securityType: secType, 
+          port: portToUse,
+          securityType: secType,
+          timeout: 15,
         );
         
-        await _ftpConnect!.connect();
+        // Timeout kalkanı sayesinde donup kalması engelleniyor
+        await _ftpConnect!.connect().timeout(const Duration(seconds: 15));
       }
       _goToRemotePath(remotePath);
     } catch (e) {
+      if (_isConnectionError(e)) {
+        _showDisconnectDialog();
+      }
       setState(() { remoteLoading = false; remoteError = e.toString(); });
     }
   }
 
-  // --- SIFIR GECİKME MİMARİSİ: UI VE AĞI BİRBİRİNDEN AYIRAN FONKSİYONLAR ---
-
-  // 1. AŞAMA: Ekrana anında tepki ver
   void _goToRemotePath(String targetPath) {
     bool hasCache = _remoteDirectoryCache.containsKey(targetPath);
     
@@ -1049,23 +1116,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         remoteLoading = false;
         remoteError = '';
       } else {
-        // Yeni bir klasörse spinner göster
         remoteFiles = [];
         remoteLoading = true;
         remoteError = '';
       }
     });
 
-    // Anında ekranı güncelledikten sonra ağı sessizce tetikle
     _fetchRemoteDataSilently(targetPath, hasCache: hasCache);
   }
 
-  // 2. AŞAMA: Arka planda güvenli ağ işlemi (Hızlı tıklamaları iptal ederek pürüzsüz çalışır)
   Future<void> _fetchRemoteDataSilently(String fetchPath, {required bool hasCache}) async {
-    // Bu isteğe özel bir kimlik ata. (Kullanıcı başka yere geçerse bu istek kendi kendini iptal edecek)
     int myRequestId = ++_currentNetworkRequestId;
     
-    // Eğer ağ meşgulse bekle. Beklerken kullanıcı yeni klasöre bastıysa iptal ol.
     while (_isNetworkBusy) {
       await Future.delayed(const Duration(milliseconds: 10));
       if (myRequestId != _currentNetworkRequestId) return; 
@@ -1078,19 +1140,20 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       List<RemoteEntry> files = [];
 
       if (_isSftp) {
-        final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath);
+        // SFTP için sonsuz spinner kalkanı (15sn)
+        final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath).timeout(const Duration(seconds: 15));
         for (var e in content) {
-          if (e.filename == '.' || e.filename == '..') continue;
+          if (e.filename == '.' || e.filename == '..') continue; // SFTP Nokta Filtresi
           final isDir = e.attr.isDirectory;
           final entry = RemoteEntry(name: e.filename, isDir: isDir, size: e.attr.size ?? 0);
           if (isDir) folders.add(entry); else files.add(entry);
         }
       } else {
-        // FTP sunucuları klasör konumuyla (State) çalışır. Arka plan işleminin 
-        // güvenli olması için her seferinde absolute (tam) yola gidilir.
-        await _ftpConnect!.changeDirectory(fetchPath);
-        final content = await _ftpConnect!.listDirectoryContent();
+        // FTPES ve Düz FTP için sonsuz spinner kalkanları
+        await _ftpConnect!.changeDirectory(fetchPath).timeout(const Duration(seconds: 15));
+        final content = await _ftpConnect!.listDirectoryContent().timeout(const Duration(seconds: 15));
         for (var e in content) {
+          if (e.name == '.' || e.name == '..') continue; // FTP Nokta Filtresi EKLENDİ
           final isDir = e.type == FTPEntryType.dir;
           final entry = RemoteEntry(name: e.name, isDir: isDir, size: e.size ?? 0);
           if (isDir) folders.add(entry); else files.add(entry);
@@ -1099,22 +1162,24 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       
       _sortRemoteFiles(folders, files);
       final resultList = [...folders, ...files];
-      _remoteDirectoryCache[fetchPath] = resultList; // Önbelleği yenile
+      _remoteDirectoryCache[fetchPath] = resultList;
 
-      // Ekranı sadece kullanıcı hala aynı klasördeyse yenile
       if (mounted && remotePath == fetchPath) {
         setState(() {
           remoteFiles = resultList;
           remoteLoading = false;
-          if (!hasCache) _selectedRemoteNames.clear(); // Yalnızca sıfırdan yüklendiyse seçimleri temizle
+          if (!hasCache) _selectedRemoteNames.clear();
         });
       }
     } catch (e) {
+      if (_isConnectionError(e)) {
+         _showDisconnectDialog(); 
+      }
       if (mounted && remotePath == fetchPath && !hasCache) {
         setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
       }
     } finally {
-      _isNetworkBusy = false; // Ağ kilidini aç
+      _isNetworkBusy = false;
     }
   }
 
@@ -1131,8 +1196,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     } else {
       targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
     }
-
-    // Doğrudan sıfır-gecikme fonksiyonuna gönder
     _goToRemotePath(targetPath);
   }
 
@@ -1166,7 +1229,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   _remoteDirectoryCache.remove(remotePath); 
                   _goToRemotePath(remotePath);
                 } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                  if (_isConnectionError(e)) _showDisconnectDialog();
+                  else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
               }
             },
@@ -1206,7 +1270,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   _remoteDirectoryCache.remove(remotePath);
                   _goToRemotePath(remotePath);
                 } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                  if (_isConnectionError(e)) _showDisconnectDialog();
+                  else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
               }
             },
@@ -1241,17 +1306,21 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         }
         _loadLocal(localPath);
       } else {
+        bool connectionLost = false;
         for (String name in items) {
           try {
             if (_isSftp) {
               try { await _sftpClient!.remove('$remotePath/$name'); } catch(_) {
-                try { await _sftpClient!.rmdir('$remotePath/$name'); } catch(_) {}
+                try { await _sftpClient!.rmdir('$remotePath/$name'); } catch(e) { if(_isConnectionError(e)) connectionLost = true;}
               }
             } else {
               await _ftpConnect!.deleteFile(name);
             }
-          } catch (_) {}
+          } catch (e) {
+             if (_isConnectionError(e)) connectionLost = true;
+          }
         }
+        if (connectionLost) _showDisconnectDialog();
         _remoteDirectoryCache.remove(remotePath);
         _goToRemotePath(remotePath);
       }
@@ -1436,6 +1505,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
 
     int successCount = 0;
+    bool connectionLost = false;
 
     for (String item in itemsToTransfer) {
       try {
@@ -1467,7 +1537,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             if (res) successCount++;
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        if (_isConnectionError(e)) connectionLost = true;
+      }
     }
 
     if (isLocal) {
@@ -1480,25 +1552,29 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
 
     if (mounted) Navigator.pop(context); 
-
-    showDialog(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'),
-            const SizedBox(height: 10),
-            const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey),
+    
+    if (connectionLost) {
+      _showDisconnectDialog();
+    } else {
+      showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'),
+              const SizedBox(height: 10),
+              const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK')),
           ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK')),
-        ],
-      )
-    );
+        )
+      );
+    }
   }
 
   void _handleFilterSelect(bool isLocal) {
@@ -1641,7 +1717,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                           _loadLocal(parent);
                         }
                       } else {
-                        _changeRemoteDirectory('..'); // Anında tetiklenir
+                        _changeRemoteDirectory('..'); 
                       }
                     },
                   ),
