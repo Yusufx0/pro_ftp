@@ -1,4 +1,4 @@
-package com.ftp.pro_ftp
+package com.ftp
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -17,7 +17,7 @@ plugins {
 }
 
 android {
-    namespace = "com.ftp.pro_ftp"
+    namespace = "com.ftp"
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
@@ -28,7 +28,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).[span_1](start_span)[span_1](end_span)
-        applicationId = "com.ftp.pro_ftp"
+        applicationId = "com.ftp"
         // You can update the following values to match your application needs.[span_2](start_span)[span_2](end_span)
         // For more information, see: https://flutter.dev/to/review-gradle-config.[span_3](start_span)[span_3](end_span)
         minSdk = flutter.minSdkVersion
