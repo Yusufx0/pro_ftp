@@ -3,7 +3,7 @@ import java.util.Properties
 
 // 1. İMZA YAPILANDIRMASI İÇİN PROPERTIES DOSYASINI OKUMA BÖLÜMÜ
 val keystoreProperties = Properties()
-val keystorePropertiesFile = file("keystore.properties")
+val keystorePropertiesFile = file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 } else {
