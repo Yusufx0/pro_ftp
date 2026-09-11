@@ -466,7 +466,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   late TabController _tabController;
   
   String _sortMethod = 'Name'; 
-  String localPath = '/storage/emulated/0'; // DOĞRUDAN CİHAZ DEPOLAMASINA DÖNÜLDÜ
+  String localPath = '/storage/emulated/0'; // Orijinal varsayılan yol
   List<FileSystemEntity> localFiles = [];
   bool localLoading = true;
   final Set<String> _selectedLocalPaths = {};
@@ -598,16 +598,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- LOCAL LOGIC (TÜM DOSYA VE KLASÖRLERİ GÖSTERME) ---
+  // --- LOCAL LOGIC (ORİJİNAL SORUNSUZ DOSYA AYIRMA SİSTEMİ) ---
   Future<void> _initLocal() async {
     await Permission.manageExternalStorage.request();
     await Permission.storage.request();
-    
-    // Uygulama açılışında her zaman cihaz ana dizinine yönlendir
-    if (localPath.isEmpty) {
-       localPath = '/storage/emulated/0'; 
-    }
-    
     _loadLocal(localPath);
   }
 
@@ -620,11 +614,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         List<FileSystemEntity> folders = [];
         List<FileSystemEntity> files = [];
         
+        // Eskiden çalışan orijinal yapıya geri dönüldü:
         for (var e in entities) {
-          if (FileSystemEntity.isDirectorySync(e.path)) {
+          if (e is Directory) {
             folders.add(e);
           } else {
-            files.add(e); 
+            files.add(e);
           }
         }
         
@@ -1209,6 +1204,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 
+  // --- BURASI ORİJİNAL ÇALIŞAN HALİNE ÇEVRİLDİ ---
   Widget _buildLocalList() {
     if (localLoading) return const Center(child: CircularProgressIndicator());
     return ListView.separated(
@@ -1216,7 +1212,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entity = localFiles[index];
-        final isDir = FileSystemEntity.isDirectorySync(entity.path);
+        final isDir = entity is Directory;
         final name = entity.path.split('/').last;
         
         String sizeStr = "";
