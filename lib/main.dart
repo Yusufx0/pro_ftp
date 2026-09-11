@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -268,13 +269,61 @@ class _LoginScreenState extends State<LoginScreen> {
           username: selectedProfile!.user,
           identities: identities,
           onPasswordRequest: () => selectedProfile!.password,
-          // Güvenlik İyileştirmesi: Gerçek bir uygulamada onBadHostKey ile host fingerprint doğrulaması yapılmalıdır.
+          // GÜVENLİK KATI: SFTP Host Key (MITM) Doğrulaması
+          onBadHostKey: (String host, int port, String fingerprint) async {
+            final String storageKey = 'trusted_host_${host}_$port';
+            final String? trustedFingerprint = await _secureStorage.read(key: storageKey);
+
+            if (trustedFingerprint == fingerprint) {
+              return true; // Anahtar daha önce onaylanmış ve eşleşiyor
+            }
+
+            // Anahtar eşleşmedi veya ilk bağlantı, kullanıcıya sor
+            Completer<bool> completer = Completer<bool>();
+            if (context.mounted) {
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (BuildContext context) {
+                  return AlertDialog(
+                    title: const Text("Security: Unknown Host Key", style: TextStyle(color: Colors.orangeAccent)),
+                    content: Text(
+                      "The server's host key is unknown or has changed.\n\n"
+                      "Fingerprint:\n$fingerprint\n\n"
+                      "Do you trust this server? (If you don't recognize this, you might be under a Man-in-the-Middle attack)."
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          completer.complete(false);
+                        },
+                        child: const Text("Reject & Disconnect", style: TextStyle(color: Colors.redAccent)),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          await _secureStorage.write(key: storageKey, value: fingerprint);
+                          Navigator.pop(context);
+                          completer.complete(true);
+                        },
+                        child: const Text("Trust & Connect"),
+                      ),
+                    ],
+                  );
+                },
+              );
+            } else {
+              completer.complete(false);
+            }
+            return completer.future;
+          },
         );
         
         await client.authenticated;
         await client.sftp();
         client.close();
       } else {
+        // FTP/FTPS/FTPES Bağlantısı (Dart default SecureSocket TLS 1.2/1.3 kullanır)
         SecurityType secType = SecurityType.ftp;
         if (selectedProfile!.mode.contains('FTPES')) secType = SecurityType.ftpes;
         if (selectedProfile!.mode.contains('FTPS')) secType = SecurityType.ftps;
@@ -292,7 +341,10 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       String errStr = e.toString().toLowerCase();
-      if (errStr.contains('530') || errStr.contains('auth') || errStr.contains('permission') || errStr.contains('credential') || errStr.contains('login')) {
+      // GÜVENLİK KATI: FTPS/FTPES Sertifika Hatalarını Yakalama (Strict Root CA Validation)
+      if (errStr.contains('handshake') || errStr.contains('certificate')) {
+        errorMessage = "Security Alert: Invalid or untrusted SSL/TLS certificate. The connection was blocked to protect your data.";
+      } else if (errStr.contains('530') || errStr.contains('auth') || errStr.contains('permission') || errStr.contains('credential') || errStr.contains('login')) {
         errorMessage = "Invalid user name or password.";
       } else if (errStr.contains('socket') || errStr.contains('failed host lookup') || errStr.contains('connection refused')) {
         errorMessage = "Could not connect to server. Check host or port.";
@@ -335,7 +387,7 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: const Row(
           children: [
-            Icon(Icons.security, color: Colors.blueAccent), // Güvenlik odaklı ikon değişikliği
+            Icon(Icons.security, color: Colors.blueAccent),
             SizedBox(width: 8),
             Text('Ftp Master Secure'),
           ],
@@ -844,6 +896,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   
   // HIZ İYİLEŞTİRMESİ: Jet hızında gezinmek için önbellek mekanizması
   final Map<String, List<RemoteEntry>> _remoteCache = {};
+  final _secureStorage = const FlutterSecureStorage();
 
   @override
   void initState() {
@@ -1043,6 +1096,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           username: widget.profile.user,
           identities: identities,
           onPasswordRequest: () => widget.profile.password,
+          // İç ekran için de parmak izi doğrulamasını ekliyoruz
+          onBadHostKey: (String host, int port, String fingerprint) async {
+             final String storageKey = 'trusted_host_${host}_$port';
+             final String? trustedFingerprint = await _secureStorage.read(key: storageKey);
+             if (trustedFingerprint == fingerprint) return true;
+             return false; // Login ekranında onaylandığı için burada sadece kontrol ediyoruz
+          }
         );
         _sftpClient = await _sshClient!.sftp();
       } else {
