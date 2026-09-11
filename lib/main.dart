@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:ftpconnect/ftpconnect.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:dartssh2/dartssh2.dart'; // SFTP desteği için eklendi
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,7 +19,7 @@ class FtpProApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'FTP Pro',
+      title: 'FTP Master',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -48,6 +49,7 @@ class FtpProfile {
   String host;
   String user;
   String password;
+  String privateKey; // SFTP private key yolu için eklendi
   bool savePassword;
   String port;
   String localPath;
@@ -60,6 +62,7 @@ class FtpProfile {
     this.host = '',
     this.user = '',
     this.password = '',
+    this.privateKey = '',
     this.savePassword = true,
     this.port = '21',
     this.localPath = '',
@@ -73,6 +76,7 @@ class FtpProfile {
         'host': host,
         'user': user,
         'password': savePassword ? password : '',
+        'privateKey': privateKey,
         'savePassword': savePassword,
         'port': port,
         'localPath': localPath,
@@ -86,12 +90,22 @@ class FtpProfile {
         host: json['host'] ?? '',
         user: json['user'] ?? '',
         password: json['password'] ?? '',
+        privateKey: json['privateKey'] ?? '',
         savePassword: json['savePassword'] ?? true,
         port: json['port'] ?? '21',
         localPath: json['localPath'] ?? '',
         remotePath: json['remotePath'] ?? '',
         charset: json['charset'] ?? 'UTF-8',
       );
+}
+
+// FTP ve SFTP listelemelerini ortak kullanmak için ara model
+class RemoteEntry {
+  final String name;
+  final bool isDir;
+  final int size;
+
+  RemoteEntry({required this.name, required this.isDir, required this.size});
 }
 
 // --- YARDIMCI FONKSİYONLAR ---
@@ -204,11 +218,11 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
+        title: const Row(
           children: [
-            const Icon(Icons.public, color: Colors.blueAccent),
-            const SizedBox(width: 8),
-            const Text('FtpPro'),
+            Icon(Icons.public, color: Colors.blueAccent),
+            SizedBox(width: 8),
+            Text('Ftp Master'), // İsim güncellendi
           ],
         ),
         actions: [
@@ -264,17 +278,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ),
             ),
-            const Spacer(),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 40.0),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Icon(Icons.public, size: 100, color: Colors.blueAccent.withAlpha(204)),
-                  const Positioned(bottom: 0, child: Icon(Icons.sync_alt, size: 50, color: Colors.redAccent)),
-                ],
-              ),
-            ),
+            const Spacer(), // Alttaki büyük dünya ikonları kaldırıldı
           ],
         ),
       ),
@@ -296,6 +300,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController hostCtrl;
   late TextEditingController userCtrl;
   late TextEditingController passCtrl;
+  late TextEditingController privateKeyCtrl; // Özel anahtar controllerı
   late TextEditingController portCtrl;
   late TextEditingController localPathCtrl;
   late TextEditingController remotePathCtrl;
@@ -308,6 +313,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     'FTP',
     'FTPES (Explicit secure FTP)',
     'FTPS (Implicit secure FTP)',
+    'SFTP (FTP over SSH)', // SFTP eklendi
   ];
 
   final List<String> charsets = ['UTF-8', 'ISO-8859-1', 'Windows-1254'];
@@ -319,12 +325,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     hostCtrl = TextEditingController(text: widget.profile?.host ?? '');
     userCtrl = TextEditingController(text: widget.profile?.user ?? '');
     passCtrl = TextEditingController(text: widget.profile?.password ?? '');
+    privateKeyCtrl = TextEditingController(text: widget.profile?.privateKey ?? '');
     portCtrl = TextEditingController(text: widget.profile?.port ?? '21');
     localPathCtrl = TextEditingController(text: widget.profile?.localPath ?? '');
     remotePathCtrl = TextEditingController(text: widget.profile?.remotePath ?? '');
     
     if (widget.profile != null) {
       selectedMode = widget.profile!.mode;
+      if (!ftpModes.contains(selectedMode)) selectedMode = 'FTP';
       savePass = widget.profile!.savePassword;
       selectedCharset = charsets.contains(widget.profile!.charset) ? widget.profile!.charset : 'UTF-8';
     }
@@ -341,6 +349,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       host: hostCtrl.text.trim(),
       user: userCtrl.text.trim(),
       password: passCtrl.text,
+      privateKey: privateKeyCtrl.text.trim(),
       savePassword: savePass,
       port: portCtrl.text,
       localPath: localPathCtrl.text,
@@ -348,6 +357,205 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       charset: selectedCharset,
     );
     Navigator.pop(context, newProfile);
+  }
+
+  // --- BROWSER: KLASÖR SEÇİCİ (Local Path İçin) ---
+  Future<void> _showDirectoryPicker() async {
+    await Permission.manageExternalStorage.request();
+    await Permission.storage.request();
+
+    String currentPath = localPathCtrl.text.isNotEmpty ? localPathCtrl.text : '/storage/emulated/0';
+    if (!Directory(currentPath).existsSync()) {
+      currentPath = '/storage/emulated/0';
+    }
+    String selectedPath = currentPath;
+    List<FileSystemEntity> dirs = [];
+
+    void loadDirs(String path, StateSetter setDialogState) {
+      try {
+        final dir = Directory(path);
+        if (dir.existsSync()) {
+          dirs = dir.listSync().whereType<Directory>().toList();
+          dirs.sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+          currentPath = path;
+        }
+      } catch (_) {}
+      setDialogState(() {});
+    }
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            if (dirs.isEmpty && Directory(currentPath).existsSync()) {
+               try {
+                 dirs = Directory(currentPath).listSync().whereType<Directory>().toList();
+                 dirs.sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+               } catch(_) {}
+            }
+            return AlertDialog(
+              title: Text('Local path:\n$currentPath', style: const TextStyle(fontSize: 14, color: Colors.blueAccent)),
+              contentPadding: const EdgeInsets.all(8),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 400,
+                child: Column(
+                  children: [
+                    if (currentPath != '/storage/emulated/0' && currentPath != '/')
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.folder, color: Colors.blueAccent),
+                        title: const Text('..'),
+                        onTap: () {
+                          final parent = Directory(currentPath).parent.path;
+                          loadDirs(parent, setDialogState);
+                        },
+                      ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: dirs.length,
+                        itemBuilder: (context, index) {
+                          final dir = dirs[index];
+                          final name = dir.path.split('/').last;
+                          final isSelected = selectedPath == dir.path;
+                          return ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.folder, color: Colors.blueAccent),
+                            title: Text(name),
+                            trailing: Checkbox(
+                              activeColor: Colors.blueAccent,
+                              value: isSelected,
+                              onChanged: (val) {
+                                setDialogState(() => selectedPath = dir.path);
+                              },
+                            ),
+                            onTap: () => loadDirs(dir.path, setDialogState),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                TextButton(
+                  onPressed: () {
+                    localPathCtrl.text = selectedPath;
+                    Navigator.pop(context);
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // --- BROWSER: DOSYA SEÇİCİ (Private Key İçin) ---
+  Future<void> _showFilePicker() async {
+    await Permission.manageExternalStorage.request();
+    await Permission.storage.request();
+
+    String currentPath = '/storage/emulated/0';
+    String selectedFile = '';
+    List<FileSystemEntity> entities = [];
+
+    void loadEntities(String path, StateSetter setDialogState) {
+      try {
+        final dir = Directory(path);
+        if (dir.existsSync()) {
+          entities = dir.listSync();
+          entities.sort((a, b) {
+            bool aIsDir = FileSystemEntity.isDirectorySync(a.path);
+            bool bIsDir = FileSystemEntity.isDirectorySync(b.path);
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
+            return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+          });
+          currentPath = path;
+        }
+      } catch (_) {}
+      setDialogState(() {});
+    }
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            if (entities.isEmpty && Directory(currentPath).existsSync()) {
+              loadEntities(currentPath, setDialogState);
+            }
+            return AlertDialog(
+              title: Text('Select Key File:\n$currentPath', style: const TextStyle(fontSize: 14, color: Colors.blueAccent)),
+              contentPadding: const EdgeInsets.all(8),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 400,
+                child: Column(
+                  children: [
+                    if (currentPath != '/storage/emulated/0' && currentPath != '/')
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.folder, color: Colors.blueAccent),
+                        title: const Text('..'),
+                        onTap: () => loadEntities(Directory(currentPath).parent.path, setDialogState),
+                      ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: entities.length,
+                        itemBuilder: (context, index) {
+                          final entity = entities[index];
+                          final isDir = FileSystemEntity.isDirectorySync(entity.path);
+                          final name = entity.path.split('/').last;
+                          final isSelected = selectedFile == entity.path;
+
+                          return ListTile(
+                            dense: true,
+                            leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: Colors.blueAccent),
+                            title: Text(name),
+                            trailing: isDir ? null : Checkbox(
+                              activeColor: Colors.blueAccent,
+                              value: isSelected,
+                              onChanged: (val) {
+                                setDialogState(() => selectedFile = entity.path);
+                              },
+                            ),
+                            onTap: () {
+                              if (isDir) {
+                                loadEntities(entity.path, setDialogState);
+                              } else {
+                                setDialogState(() => selectedFile = entity.path);
+                              }
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                TextButton(
+                  onPressed: () {
+                    if (selectedFile.isNotEmpty) {
+                      privateKeyCtrl.text = selectedFile;
+                    }
+                    Navigator.pop(context);
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -378,7 +586,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       isExpanded: true,
                       value: selectedMode,
                       items: ftpModes.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-                      onChanged: (val) { if (val != null) setState(() => selectedMode = val); },
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() {
+                            selectedMode = val;
+                            if (selectedMode == 'SFTP (FTP over SSH)') {
+                              portCtrl.text = '22'; // SFTP varsayılan port
+                            } else if (portCtrl.text == '22') {
+                              portCtrl.text = '21';
+                            }
+                          });
+                        }
+                      },
                     )),
                     const SizedBox(height: 16),
                     _buildLabelRow('* Host:', TextField(controller: hostCtrl, decoration: const InputDecoration(isDense: true))),
@@ -392,6 +611,25 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         const Text('Save'),
                       ],
                     )),
+                    
+                    // SADECE SFTP SEÇİLİYSE PRIVATE KEY ALANINI GÖSTER
+                    if (selectedMode == 'SFTP (FTP over SSH)') ...[
+                      const SizedBox(height: 16),
+                      _buildLabelRow('Private key:', Row(
+                        children: [
+                          Expanded(child: TextField(controller: privateKeyCtrl, decoration: const InputDecoration(isDense: true, hintText: 'Key path'))),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: _showFilePicker,
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              minimumSize: const Size(0, 36)
+                            ),
+                            child: const Text('Browse...', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      )),
+                    ],
                   ],
                 ),
               ),
@@ -403,7 +641,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   children: [
                     _buildLabelRow('Port:', TextField(controller: portCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(isDense: true))),
                     const SizedBox(height: 16),
-                    _buildLabelRow('Local path:', TextField(controller: localPathCtrl, decoration: const InputDecoration(isDense: true, hintText: 'Optional local path'))),
+                    _buildLabelRow('Local path:', Row(
+                      children: [
+                        Expanded(child: TextField(controller: localPathCtrl, decoration: const InputDecoration(isDense: true, hintText: 'Optional local path'))),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _showDirectoryPicker,
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            minimumSize: const Size(0, 36)
+                          ),
+                          child: const Text('Browser', style: TextStyle(fontSize: 12)),
+                        ),
+                      ],
+                    )),
                     const SizedBox(height: 16),
                     _buildLabelRow('Remote path:', TextField(controller: remotePathCtrl, decoration: const InputDecoration(isDense: true, hintText: 'Optional remote path'))),
                     const SizedBox(height: 16),
@@ -467,13 +718,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   late TabController _tabController;
   
   String _sortMethod = 'Name'; 
-  String localPath = ''; 
+  String localPath = '/storage/emulated/0';
   List<FileSystemEntity> localFiles = [];
   bool localLoading = true;
   final Set<String> _selectedLocalPaths = {};
 
+  // FTP ve SFTP İstemcileri
   FTPConnect? _ftpConnect;
-  List<FTPEntry> remoteFiles = [];
+  SSHClient? _sshClient;
+  SftpClient? _sftpClient;
+  bool get _isSftp => widget.profile.mode.contains('SFTP');
+
+  List<RemoteEntry> remoteFiles = []; // Ortak liste modeli kullanılıyor
   bool remoteLoading = true;
   String remotePath = '/';
   String remoteError = '';
@@ -482,7 +738,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   @override
   void initState() {
     super.initState();
-    if (widget.profile.localPath.isNotEmpty) localPath = widget.profile.localPath;
+    if (widget.profile.localPath.isNotEmpty) {
+      localPath = widget.profile.localPath;
+    } else {
+      localPath = '/storage/emulated/0';
+    }
+    
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
     
     _tabController = TabController(length: 2, vsync: this);
@@ -494,6 +755,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   @override
   void dispose() {
     _ftpConnect?.disconnect();
+    _sshClient?.close();
     _tabController.dispose();
     super.dispose();
   }
@@ -513,12 +775,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  void _sortRemoteFiles(List<FTPEntry> folders, List<FTPEntry> files) {
+  void _sortRemoteFiles(List<RemoteEntry> folders, List<RemoteEntry> files) {
     if (_sortMethod == 'Name') {
       folders.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
       files.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     } else if (_sortMethod == 'Size') {
-      files.sort((a, b) => (b.size ?? 0).compareTo(a.size ?? 0));
+      files.sort((a, b) => b.size.compareTo(a.size));
     }
   }
 
@@ -589,8 +851,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     } else {
       setState(() => remoteLoading = true);
       try {
-        await _ftpConnect!.changeDirectory(newPath);
-        remotePath = newPath;
+        if (_isSftp) {
+          remotePath = newPath;
+        } else {
+          await _ftpConnect!.changeDirectory(newPath);
+          remotePath = newPath;
+        }
         await _loadRemote();
       } catch (e) {
         setState(() => remoteLoading = false);
@@ -599,20 +865,14 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- LOCAL LOGIC (PATH_PROVIDER VE GÜVENLİ YALITIM EKLENDİ) ---
+  // --- LOCAL LOGIC ---
   Future<void> _initLocal() async {
     await Permission.manageExternalStorage.request();
     await Permission.storage.request();
     
-    if (localPath.isEmpty || localPath == '/storage/emulated/0') {
-      try {
-        final directory = await getApplicationDocumentsDirectory();
-        localPath = directory.path;
-      } catch (e) {
-        localPath = '/storage/emulated/0'; 
-      }
+    if (localPath.isEmpty) {
+      localPath = '/storage/emulated/0';
     }
-    
     _loadLocal(localPath);
   }
 
@@ -648,29 +908,49 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- REMOTE LOGIC (KÜÇÜK HARFLİ GÜVENLİ İLETİŞİM) ---
+  // --- REMOTE LOGIC (FTP & SFTP DESTEĞİ) ---
   Future<void> _initRemote() async {
     setState(() { remoteLoading = true; remoteError = ''; });
     try {
-      SecurityType secType = SecurityType.ftp;
-      if (widget.profile.mode.contains('FTPES')) {
-        secType = SecurityType.ftpes;
-      } else if (widget.profile.mode.contains('FTPS')) {
-        secType = SecurityType.ftps;
-      }
-      
-      _ftpConnect = FTPConnect(
-        widget.profile.host,
-        user: widget.profile.user,
-        pass: widget.profile.password,
-        port: int.tryParse(widget.profile.port) ?? 21,
-        securityType: secType, 
-      );
-      
-      await _ftpConnect!.connect();
-      
-      if (remotePath != '/') {
-        await _ftpConnect!.changeDirectory(remotePath);
+      if (_isSftp) {
+        // SFTP BAĞLANTISI (dartssh2)
+        final socket = await SSHSocket.connect(widget.profile.host, int.tryParse(widget.profile.port) ?? 22);
+        
+        List<SSHKeyPair> identities = [];
+        if (widget.profile.privateKey.isNotEmpty) {
+          final keyFile = File(widget.profile.privateKey);
+          if (keyFile.existsSync()) {
+            identities = SSHKeyPair.fromPem(keyFile.readAsStringSync());
+          }
+        }
+
+        _sshClient = SSHClient(
+          socket,
+          username: widget.profile.user,
+          identities: identities,
+          onPasswordRequest: () => widget.profile.password,
+        );
+        
+        _sftpClient = await _sshClient!.sftp();
+        
+      } else {
+        // NORMAL FTP/FTPS/FTPES BAĞLANTISI (ftpconnect)
+        SecurityType secType = SecurityType.ftp;
+        if (widget.profile.mode.contains('FTPES')) secType = SecurityType.ftpes;
+        if (widget.profile.mode.contains('FTPS')) secType = SecurityType.ftps;
+        
+        _ftpConnect = FTPConnect(
+          widget.profile.host,
+          user: widget.profile.user,
+          pass: widget.profile.password,
+          port: int.tryParse(widget.profile.port) ?? 21,
+          securityType: secType, 
+        );
+        
+        await _ftpConnect!.connect();
+        if (remotePath != '/') {
+          await _ftpConnect!.changeDirectory(remotePath);
+        }
       }
       _loadRemote();
     } catch (e) {
@@ -681,15 +961,25 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Future<void> _loadRemote() async {
     setState(() => remoteLoading = true);
     try {
-      final content = await _ftpConnect!.listDirectoryContent();
-      List<FTPEntry> folders = [];
-      List<FTPEntry> files = [];
+      List<RemoteEntry> folders = [];
+      List<RemoteEntry> files = [];
 
-      for (var e in content) {
-        if (e.type == FTPEntryType.dir) {
-          folders.add(e);
-        } else {
-          files.add(e); 
+      if (_isSftp) {
+        // SFTP DOSYA LİSTELEME
+        final content = await _sftpClient!.listdir(remotePath == '/' ? '.' : remotePath);
+        for (var e in content) {
+          if (e.filename == '.' || e.filename == '..') continue;
+          final isDir = e.attr.isDirectory;
+          final entry = RemoteEntry(name: e.filename, isDir: isDir, size: e.attr.size ?? 0);
+          if (isDir) folders.add(entry); else files.add(entry);
+        }
+      } else {
+        // FTP DOSYA LİSTELEME
+        final content = await _ftpConnect!.listDirectoryContent();
+        for (var e in content) {
+          final isDir = e.type == FTPEntryType.dir;
+          final entry = RemoteEntry(name: e.name, isDir: isDir, size: e.size ?? 0);
+          if (isDir) folders.add(entry); else files.add(entry);
         }
       }
       
@@ -708,14 +998,25 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Future<void> _changeRemoteDirectory(String dirName) async {
     setState(() => remoteLoading = true);
     try {
-      await _ftpConnect!.changeDirectory(dirName);
-      if (dirName == '..') {
-        if (remotePath != '/') {
-          int lastIdx = remotePath.lastIndexOf('/');
-          remotePath = lastIdx == 0 ? '/' : remotePath.substring(0, lastIdx);
+      if (_isSftp) {
+        if (dirName == '..') {
+          if (remotePath != '/') {
+            int lastIdx = remotePath.lastIndexOf('/');
+            remotePath = lastIdx <= 0 ? '/' : remotePath.substring(0, lastIdx);
+          }
+        } else {
+          remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
         }
       } else {
-        remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
+        await _ftpConnect!.changeDirectory(dirName);
+        if (dirName == '..') {
+          if (remotePath != '/') {
+            int lastIdx = remotePath.lastIndexOf('/');
+            remotePath = lastIdx == 0 ? '/' : remotePath.substring(0, lastIdx);
+          }
+        } else {
+          remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
+        }
       }
       await _loadRemote();
     } catch (e) {
@@ -747,7 +1048,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 _loadLocal(localPath);
               } else {
                 try {
-                  await _ftpConnect!.makeDirectory(name);
+                  if (_isSftp) {
+                    await _sftpClient!.mkdir('$remotePath/$name');
+                  } else {
+                    await _ftpConnect!.makeDirectory(name);
+                  }
                   _loadRemote();
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -782,7 +1087,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 _loadLocal(localPath);
               } else {
                 try {
-                  await _ftpConnect!.rename(oldName, newName);
+                  if (_isSftp) {
+                    await _sftpClient!.rename('$remotePath/$oldName', '$remotePath/$newName');
+                  } else {
+                    await _ftpConnect!.rename(oldName, newName);
+                  }
                   _loadRemote();
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -822,91 +1131,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       } else {
         for (String name in items) {
           try {
-            await _ftpConnect!.deleteFile(name);
+            if (_isSftp) {
+              try { await _sftpClient!.remove('$remotePath/$name'); } catch(_) {
+                try { await _sftpClient!.rmdir('$remotePath/$name'); } catch(_) {}
+              }
+            } else {
+              await _ftpConnect!.deleteFile(name);
+            }
           } catch (_) {}
         }
         _loadRemote();
       }
     }
-  }
-
-  // --- PROPERTIES LOGIC ---
-  void _showProperties(String itemName, String size, bool isDir) {
-    bool oR = true, oW = true, oX = false;
-    bool gR = true, gW = false, gX = false;
-    bool otR = true, otW = false, otX = false;
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              contentPadding: EdgeInsets.zero,
-              titlePadding: const EdgeInsets.all(16),
-              title: const Text('File properties', style: TextStyle(color: Colors.lightBlueAccent)),
-              content: Container(
-                width: double.maxFinite,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Name: $itemName'),
-                    Text('Type: ${isDir ? "Directory" : "File"}'),
-                    Text('Size: $size'),
-                    const Text('Modified: N/A'),
-                    const SizedBox(height: 16),
-                    const Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [Text('Owner:'), Text('Group:'), SizedBox(width: 20)],
-                    ),
-                    const Divider(),
-                    _buildPermissionRow('Owner', oR, oW, oX, (val, type) {
-                      setDialogState(() {
-                        if (type == 'R') oR = val!;
-                        if (type == 'W') oW = val!;
-                        if (type == 'X') oX = val!;
-                      });
-                    }),
-                    _buildPermissionRow('Group', gR, gW, gX, (val, type) {
-                      setDialogState(() {
-                        if (type == 'R') gR = val!;
-                        if (type == 'W') gW = val!;
-                        if (type == 'X') gX = val!;
-                      });
-                    }),
-                    _buildPermissionRow('Other', otR, otW, otX, (val, type) {
-                      setDialogState(() {
-                        if (type == 'R') otR = val!;
-                        if (type == 'W') otW = val!;
-                        if (type == 'X') otX = val!;
-                      });
-                    }),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
-              ],
-            );
-          }
-        );
-      }
-    );
-  }
-
-  Widget _buildPermissionRow(String label, bool r, bool w, bool x, Function(bool?, String) onChanged) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        SizedBox(width: 60, child: Text(label)),
-        Row(children: [Checkbox(value: r, onChanged: (v) => onChanged(v, 'R'), activeColor: Colors.lightBlueAccent), const Text('R')]),
-        Row(children: [Checkbox(value: w, onChanged: (v) => onChanged(v, 'W'), activeColor: Colors.lightBlueAccent), const Text('W')]),
-        Row(children: [Checkbox(value: x, onChanged: (v) => onChanged(v, 'X'), activeColor: Colors.lightBlueAccent), const Text('X')]),
-      ],
-    );
   }
 
   // --- UZUN BASMA (LONG PRESS) MENÜSÜ ---
@@ -959,20 +1195,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               }, 
               child: const Text('Share link')
             ),
-            SimpleDialogOption(
-              onPressed: () {
-                Navigator.pop(context);
-                _showProperties(itemName.split('/').last, sizeStr, isDir);
-              }, 
-              child: const Text('Properties')
-            ),
           ],
         );
       }
     );
   }
 
-  // --- TRANSFER LOGIC ---
+  // --- TRANSFER LOGIC (SFTP DESTEKLİ) ---
   Future<void> _transferSelectedItems() async {
     bool isLocal = _tabController.index == 0;
     List<String> itemsToTransfer = isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList();
@@ -1000,14 +1229,34 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     for (String item in itemsToTransfer) {
       try {
         if (isLocal) {
+          // UPLOAD YAPIYORUZ
           File file = File(item);
           if (await file.exists()) {
-            bool res = await _ftpConnect!.uploadFile(file);
-            if (res) successCount++;
+            if (_isSftp) {
+              final remoteFile = await _sftpClient!.open('$remotePath/${file.path.split('/').last}', mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
+              await remoteFile.write(file.openRead().cast<Uint8List>());
+              await remoteFile.close();
+              successCount++;
+            } else {
+              bool res = await _ftpConnect!.uploadFile(file);
+              if (res) successCount++;
+            }
           }
         } else {
-          bool res = await _ftpConnect!.downloadFile(item, File('$localPath/$item'));
-          if (res) successCount++;
+          // DOWNLOAD YAPIYORUZ
+          if (_isSftp) {
+             final remoteFile = await _sftpClient!.open('$remotePath/$item');
+             final localFile = File('$localPath/$item');
+             final sink = localFile.openWrite();
+             await for (var chunk in remoteFile.read()) {
+               sink.add(chunk);
+             }
+             await sink.close();
+             successCount++;
+          } else {
+            bool res = await _ftpConnect!.downloadFile(item, File('$localPath/$item'));
+            if (res) successCount++;
+          }
         }
       } catch (_) {}
     }
@@ -1130,23 +1379,15 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 });
               } else if (value == 'FilterSelect') {
                 _handleFilterSelect(isLocal);
-              } else if (value == 'Preferences' || value == 'About') {
-                 showDialog(
-                   context: context, 
-                   builder: (c) => AlertDialog(
-                     title: Text(value), 
-                     content: const Text('This feature will be available in future updates.'),
-                     actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))]
-                   )
-                 );
               } else if (value == 'Logout') {
                 _ftpConnect?.disconnect();
+                _sshClient?.close();
                 Navigator.pop(context);
               }
             },
             itemBuilder: (BuildContext context) {
               return const [
-                PopupMenuItem(value: 'Download', child: Text('Download')),
+                PopupMenuItem(value: 'Download', child: Text('Download/Upload')),
                 PopupMenuItem(value: 'Rename', child: Text('Rename')),
                 PopupMenuItem(value: 'Delete', child: Text('Delete')),
                 PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')),
@@ -1154,8 +1395,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 PopupMenuItem(value: 'Refresh', child: Text('Refresh')),
                 PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')),
                 PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')),
-                PopupMenuItem(value: 'Preferences', child: Text('Preferences')),
-                PopupMenuItem(value: 'About', child: Text('About')),
                 PopupMenuItem(value: 'Logout', child: Text('Logout')),
               ];
             },
@@ -1275,9 +1514,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entry = remoteFiles[index];
-        final isDir = entry.type == FTPEntryType.dir;
+        final isDir = entry.isDir;
         
-        String sizeStr = isDir ? "" : formatBytes(entry.size ?? 0);
+        String sizeStr = isDir ? "" : formatBytes(entry.size);
 
         return ListTile(
           dense: true,
