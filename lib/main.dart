@@ -3,8 +3,9 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:ftpconnect/ftpconnect.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -112,6 +113,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   List<FtpProfile> profiles = [];
   FtpProfile? selectedProfile;
+  final _secureStorage = const FlutterSecureStorage();
 
   @override
   void initState() {
@@ -120,8 +122,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadProfiles() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String? profilesJson = prefs.getString('profiles_data');
+    final String? profilesJson = await _secureStorage.read(key: 'profiles_data');
     
     if (profilesJson != null) {
       final List<dynamic> decoded = json.decode(profilesJson);
@@ -140,9 +141,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _saveProfiles() async {
-    final prefs = await SharedPreferences.getInstance();
     final String encoded = json.encode(profiles.map((p) => p.toJson()).toList());
-    await prefs.setString('profiles_data', encoded);
+    await _secureStorage.write(key: 'profiles_data', value: encoded);
   }
 
   void _openEditor({FtpProfile? profileToEdit}) async {
@@ -467,7 +467,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   late TabController _tabController;
   
   String _sortMethod = 'Name'; 
-  String localPath = '/storage/emulated/0';
+  String localPath = ''; 
   List<FileSystemEntity> localFiles = [];
   bool localLoading = true;
   final Set<String> _selectedLocalPaths = {};
@@ -498,13 +498,19 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // --- SORTING LOGIC ---
+  // --- GÜNCELLENMİŞ GÜVENLİ SORTING LOGIC ---
   void _sortLocalFiles(List<FileSystemEntity> folders, List<FileSystemEntity> files) {
     if (_sortMethod == 'Name') {
       folders.sort((a, b) => a.path.split('/').last.toLowerCase().compareTo(b.path.split('/').last.toLowerCase()));
       files.sort((a, b) => a.path.split('/').last.toLowerCase().compareTo(b.path.split('/').last.toLowerCase()));
     } else if (_sortMethod == 'Size') {
-      files.sort((a, b) => File(b.path).lengthSync().compareTo(File(a.path).lengthSync()));
+      // Çökme önleyici güvenli boyut sıralaması
+      files.sort((a, b) {
+        int aSize = 0, bSize = 0;
+        try { aSize = File(a.path).lengthSync(); } catch (_) {}
+        try { bSize = File(b.path).lengthSync(); } catch (_) {}
+        return bSize.compareTo(aSize); // Büyükten küçüğe
+      });
     }
   }
 
@@ -543,7 +549,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 
-  // --- PATH NAVIGATION LOGIC (Tıklanabilir Dizin) ---
+  // --- PATH NAVIGATION LOGIC ---
   void _openPathInputDialog(bool isLocal) {
     TextEditingController pathCtrl = TextEditingController(text: isLocal ? localPath : remotePath);
     showDialog(
@@ -553,7 +559,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         content: TextField(
           controller: pathCtrl,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Enter path (e.g., /storage/emulated/0)'),
+          decoration: const InputDecoration(hintText: 'Enter path'),
           onSubmitted: (val) {
             Navigator.pop(c);
             _navigateToPath(val.trim(), isLocal);
@@ -594,10 +600,20 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- LOCAL LOGIC ---
+  // --- LOCAL LOGIC (TÜM DOSYALARI GÖREBİLMEK İÇİN GÜNCELLENDİ) ---
   Future<void> _initLocal() async {
     await Permission.manageExternalStorage.request();
     await Permission.storage.request();
+    
+    if (localPath.isEmpty || localPath == '/storage/emulated/0') {
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        localPath = directory.path;
+      } catch (e) {
+        localPath = '/storage/emulated/0'; 
+      }
+    }
+    
     _loadLocal(localPath);
   }
 
@@ -609,9 +625,16 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entities = dir.listSync(recursive: false);
         List<FileSystemEntity> folders = [];
         List<FileSystemEntity> files = [];
+        
         for (var e in entities) {
-          if (e is Directory) folders.add(e); else files.add(e);
+          // Güncelleme: Tam isabetle dosya/klasör ayrımı (is Directory yerine isDirectorySync kullanıldı)
+          if (FileSystemEntity.isDirectorySync(e.path)) {
+            folders.add(e);
+          } else {
+            files.add(e); // Klasör değilse kesinlikle dosya listesine al
+          }
         }
+        
         _sortLocalFiles(folders, files);
         setState(() {
           localFiles = [...folders, ...files];
@@ -627,18 +650,25 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- REMOTE LOGIC ---
+  // --- REMOTE LOGIC (TÜM DOSYALARI GÖREBİLMEK İÇİN GÜNCELLENDİ) ---
   Future<void> _initRemote() async {
     setState(() { remoteLoading = true; remoteError = ''; });
     try {
-      bool isSecure = widget.profile.mode.contains('FTPES') || widget.profile.mode.contains('FTPS');
+      SecurityType secType = SecurityType.FTP;
+      if (widget.profile.mode.contains('FTPES')) {
+        secType = SecurityType.FTPES;
+      } else if (widget.profile.mode.contains('FTPS')) {
+        secType = SecurityType.FTPS;
+      }
       
       _ftpConnect = FTPConnect(
         widget.profile.host,
         user: widget.profile.user,
         pass: widget.profile.password,
-        port: int.tryParse(widget.profile.port) ?? 21
+        port: int.tryParse(widget.profile.port) ?? 21,
+        securityType: secType, 
       );
+      
       await _ftpConnect!.connect();
       
       if (remotePath != '/') {
@@ -654,8 +684,17 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     setState(() => remoteLoading = true);
     try {
       final content = await _ftpConnect!.listDirectoryContent();
-      List<FTPEntry> folders = content.where((e) => e.type == FTPEntryType.dir).toList();
-      List<FTPEntry> files = content.where((e) => e.type == FTPEntryType.file).toList();
+      List<FTPEntry> folders = [];
+      List<FTPEntry> files = [];
+
+      // Güncelleme: Yalnızca açıkça "dosya" diyenleri değil, klasör haricindeki HER ŞEYİ dosya sayıyoruz.
+      for (var e in content) {
+        if (e.type == FTPEntryType.dir) {
+          folders.add(e);
+        } else {
+          files.add(e); 
+        }
+      }
       
       _sortRemoteFiles(folders, files);
 
@@ -794,7 +833,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- PROPERTIES LOGIC (İnteraktif Checkboxlar) ---
+  // --- PROPERTIES LOGIC ---
   void _showProperties(String itemName, String size, bool isDir) {
     bool oR = true, oW = true, oX = false;
     bool gR = true, gW = false, gX = false;
@@ -936,7 +975,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 
-  // --- TRANSFER LOGIC (Görsel Yükleme Çubuğu) ---
+  // --- TRANSFER LOGIC ---
   Future<void> _transferSelectedItems() async {
     bool isLocal = _tabController.index == 0;
     List<String> itemsToTransfer = isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList();
@@ -1185,7 +1224,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entity = localFiles[index];
-        final isDir = entity is Directory;
+        // Güncelleme: UI tarafında da klasör ayrımını isDirectorySync ile sağlamlaştırdık
+        final isDir = FileSystemEntity.isDirectorySync(entity.path);
         final name = entity.path.split('/').last;
         
         String sizeStr = "";

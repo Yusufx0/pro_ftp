@@ -36,7 +36,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   ftpconnect: ^3.0.0
   permission_handler: ^13.0.2
-  shared_preferences: ^2.5.5
+  flutter_secure_storage: ^11.1.0
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:
