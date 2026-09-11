@@ -816,11 +816,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
   
-  // Jet hızında gezinme için önbellek
+  // Önbellek Sistemi
   final Map<String, List<RemoteEntry>> _remoteDirectoryCache = {};
 
-  // TAKILMAYI (FREEZE) ENGELLEYEN YENİ SİSTEM: Ağ işlemlerini sıraya koyan güvenli kilit
+  // Ağ çakışmasını engelleme kilidi (Arka plan görevleri için)
   bool _isNetworkBusy = false;
+  // Hızlı tıklamalarda eski kalan görevleri iptal etmek için ID
+  int _currentNetworkRequestId = 0;
 
   @override
   void initState() {
@@ -855,9 +857,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     } else {
       if (remotePath.isNotEmpty && remotePath != '/') {
-        if (!remoteLoading) {
-          _changeRemoteDirectory('..');
-        }
+        _changeRemoteDirectory('..'); // Artık senkron ve anında çalışıyor
         return false;
       }
     }
@@ -906,7 +906,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   if (_tabController.index == 0) {
                      _loadLocal(localPath);
                   } else {
-                     _loadRemote(useCache: false); 
+                     _remoteDirectoryCache.remove(remotePath);
+                     _goToRemotePath(remotePath); 
                   }
                 },
               );
@@ -955,29 +956,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Path does not exist.')));
       }
     } else {
-      if (remoteLoading) return;
-      setState(() { remoteLoading = true; remoteError = ''; });
-      try {
-        // Yeni Sistem: Ağ müsait olana kadar bekle, çökmeyi/takılmayı engelle
-        while(_isNetworkBusy) {
-          await Future.delayed(const Duration(milliseconds: 50));
-        }
-        _isNetworkBusy = true;
-        
-        if (_isSftp) {
-          remotePath = newPath;
-        } else {
-          await _ftpConnect!.changeDirectory(newPath);
-          remotePath = newPath;
-        }
-      } catch (e) {
-        setState(() => remoteLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
-        return;
-      } finally {
-        _isNetworkBusy = false;
-      }
-      await _loadRemote(useCache: false);
+      _goToRemotePath(newPath);
     }
   }
 
@@ -1050,38 +1029,51 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         );
         
         await _ftpConnect!.connect();
-        if (remotePath != '/') await _ftpConnect!.changeDirectory(remotePath);
       }
-      _loadRemote(useCache: false);
+      _goToRemotePath(remotePath);
     } catch (e) {
       setState(() { remoteLoading = false; remoteError = e.toString(); });
     }
   }
 
-  Future<void> _loadRemote({bool useCache = true}) async {
-    String fetchPath = remotePath;
-    bool hasCache = _remoteDirectoryCache.containsKey(fetchPath);
+  // --- SIFIR GECİKME MİMARİSİ: UI VE AĞI BİRBİRİNDEN AYIRAN FONKSİYONLAR ---
 
-    // 1. AŞAMA: Önbellekte varsa anında göster (Takılmasız Geçiş)
-    if (useCache && hasCache) {
-      setState(() {
-        remoteFiles = _remoteDirectoryCache[fetchPath]!;
-        remoteLoading = false; 
-      });
-    } else {
-      setState(() => remoteLoading = true);
-    }
-
-    try {
-      // 2. AŞAMA: Ağ işlemlerini güvenli sıraya koyma. 
-      // Kullanıcı çok hızlı tıkladıysa arka planda önceki yükleme bittikten sonra bu çalışır.
-      while(_isNetworkBusy) {
-        await Future.delayed(const Duration(milliseconds: 50));
-        // Beklerken kullanıcı başka klasöre kaçtıysa, bu güncellemeyi iptal et. (İşte takılmayı engelleyen sihir!)
-        if (remotePath != fetchPath) return; 
+  // 1. AŞAMA: Ekrana anında tepki ver
+  void _goToRemotePath(String targetPath) {
+    bool hasCache = _remoteDirectoryCache.containsKey(targetPath);
+    
+    setState(() {
+      remotePath = targetPath;
+      if (hasCache) {
+        remoteFiles = _remoteDirectoryCache[targetPath]!;
+        remoteLoading = false;
+        remoteError = '';
+      } else {
+        // Yeni bir klasörse spinner göster
+        remoteFiles = [];
+        remoteLoading = true;
+        remoteError = '';
       }
-      _isNetworkBusy = true;
+    });
 
+    // Anında ekranı güncelledikten sonra ağı sessizce tetikle
+    _fetchRemoteDataSilently(targetPath, hasCache: hasCache);
+  }
+
+  // 2. AŞAMA: Arka planda güvenli ağ işlemi (Hızlı tıklamaları iptal ederek pürüzsüz çalışır)
+  Future<void> _fetchRemoteDataSilently(String fetchPath, {required bool hasCache}) async {
+    // Bu isteğe özel bir kimlik ata. (Kullanıcı başka yere geçerse bu istek kendi kendini iptal edecek)
+    int myRequestId = ++_currentNetworkRequestId;
+    
+    // Eğer ağ meşgulse bekle. Beklerken kullanıcı yeni klasöre bastıysa iptal ol.
+    while (_isNetworkBusy) {
+      await Future.delayed(const Duration(milliseconds: 10));
+      if (myRequestId != _currentNetworkRequestId) return; 
+    }
+    
+    _isNetworkBusy = true;
+    
+    try {
       List<RemoteEntry> folders = [];
       List<RemoteEntry> files = [];
 
@@ -1094,6 +1086,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           if (isDir) folders.add(entry); else files.add(entry);
         }
       } else {
+        // FTP sunucuları klasör konumuyla (State) çalışır. Arka plan işleminin 
+        // güvenli olması için her seferinde absolute (tam) yola gidilir.
+        await _ftpConnect!.changeDirectory(fetchPath);
         final content = await _ftpConnect!.listDirectoryContent();
         for (var e in content) {
           final isDir = e.type == FTPEntryType.dir;
@@ -1104,68 +1099,41 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       
       _sortRemoteFiles(folders, files);
       final resultList = [...folders, ...files];
-      _remoteDirectoryCache[fetchPath] = resultList;
+      _remoteDirectoryCache[fetchPath] = resultList; // Önbelleği yenile
 
+      // Ekranı sadece kullanıcı hala aynı klasördeyse yenile
       if (mounted && remotePath == fetchPath) {
         setState(() {
           remoteFiles = resultList;
           remoteLoading = false;
-          if (!hasCache || !useCache) _selectedRemoteNames.clear();
+          if (!hasCache) _selectedRemoteNames.clear(); // Yalnızca sıfırdan yüklendiyse seçimleri temizle
         });
       }
     } catch (e) {
-      if (mounted && remotePath == fetchPath) {
-        setState(() {
-          remoteLoading = false;
-          if (!hasCache || !useCache) remoteError = 'Error: $e';
-        });
+      if (mounted && remotePath == fetchPath && !hasCache) {
+        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
       }
     } finally {
-      // İşlem bitince, diğer bekleyen ağ işlemlerine yol ver.
-      _isNetworkBusy = false; 
+      _isNetworkBusy = false; // Ağ kilidini aç
     }
   }
 
-  Future<void> _changeRemoteDirectory(String dirName) async {
-    // Sadece sıfır bir dizine gidiyorsa (ve yükleniyorsa) yeni tıklamayı engelle
-    if (remoteLoading && !_remoteDirectoryCache.containsKey(remotePath)) return; 
-    
-    setState(() { remoteLoading = true; remoteError = ''; });
-    
-    try {
-      while(_isNetworkBusy) {
-        await Future.delayed(const Duration(milliseconds: 50));
-      }
-      _isNetworkBusy = true;
-
-      String targetPath = remotePath;
-      if (dirName == '..') {
-        if (remotePath != '/' && remotePath.isNotEmpty) {
-          List<String> parts = remotePath.split('/').where((e) => e.isNotEmpty).toList();
-          if (parts.isNotEmpty) parts.removeLast();
-          targetPath = parts.isEmpty ? '/' : '/${parts.join('/')}';
-        } else {
-          targetPath = '/';
-        }
+  void _changeRemoteDirectory(String dirName) {
+    String targetPath = remotePath;
+    if (dirName == '..') {
+      if (remotePath != '/' && remotePath.isNotEmpty) {
+        List<String> parts = remotePath.split('/').where((e) => e.isNotEmpty).toList();
+        if (parts.isNotEmpty) parts.removeLast();
+        targetPath = parts.isEmpty ? '/' : '/${parts.join('/')}';
       } else {
-        targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
+        targetPath = '/';
       }
-
-      if (_isSftp) {
-        remotePath = targetPath;
-      } else {
-        await _ftpConnect!.changeDirectory(dirName);
-        remotePath = targetPath;
-      }
-    } catch (e) {
-      setState(() => remoteLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
-      return;
-    } finally {
-      _isNetworkBusy = false;
+    } else {
+      targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
     }
-    
-    await _loadRemote(useCache: true);
+
+    // Doğrudan sıfır-gecikme fonksiyonuna gönder
+    _goToRemotePath(targetPath);
   }
 
   void _createDirectory() {
@@ -1196,7 +1164,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     await _ftpConnect!.makeDirectory(name);
                   }
                   _remoteDirectoryCache.remove(remotePath); 
-                  _loadRemote(useCache: false);
+                  _goToRemotePath(remotePath);
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1236,7 +1204,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     await _ftpConnect!.rename(oldName, newName);
                   }
                   _remoteDirectoryCache.remove(remotePath);
-                  _loadRemote(useCache: false);
+                  _goToRemotePath(remotePath);
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1285,7 +1253,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           } catch (_) {}
         }
         _remoteDirectoryCache.remove(remotePath);
-        _loadRemote(useCache: false);
+        _goToRemotePath(remotePath);
       }
     }
   }
@@ -1505,7 +1473,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (isLocal) {
       _selectedLocalPaths.clear();
       _remoteDirectoryCache.remove(remotePath); 
-      _loadRemote(useCache: false);
+      _goToRemotePath(remotePath);
     } else {
       _selectedRemoteNames.clear();
       _loadLocal(localPath);
@@ -1603,7 +1571,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 } else if (value == 'Sort') {
                   _showSortDialog();
                 } else if (value == 'Refresh') {
-                  isLocal ? _loadLocal(localPath) : _loadRemote(useCache: false);
+                  if (isLocal) {
+                    _loadLocal(localPath);
+                  } else {
+                    _remoteDirectoryCache.remove(remotePath);
+                    _goToRemotePath(remotePath);
+                  }
                 } else if (value == 'SelectAll') {
                   setState(() {
                     if (isLocal) {
@@ -1668,7 +1641,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                           _loadLocal(parent);
                         }
                       } else {
-                        _changeRemoteDirectory('..'); // Spinner sorunu burada da düzeldi
+                        _changeRemoteDirectory('..'); // Anında tetiklenir
                       }
                     },
                   ),
