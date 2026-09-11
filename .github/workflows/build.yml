@@ -1,0 +1,23 @@
+name: Build APK
+on:
+  push:
+    branches: [ "main" ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodu Kopyala
+        uses: actions/checkout@v3
+      - name: Flutter Kur
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - name: Paketleri Indir
+        run: flutter pub get
+      - name: APK Derle
+        run: flutter build apk --debug
+      - name: APK'yi Yukle
+        uses: actions/upload-artifact@v3
+        with:
+          name: FTP-PRO-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
