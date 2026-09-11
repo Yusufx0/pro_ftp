@@ -34,6 +34,6 @@ jobs:
 
       - name: AAB'yi Yükle
         uses: actions/upload-artifact@v4
-       with:
+        with:
          name: FTP-PRO-AAB-RELEASE
          path: build/app/outputs/bundle/release/app-release.aab
