@@ -214,7 +214,6 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // Bağlantıyı test edip hata varsa FtpCafe tarzı Login error penceresi çıkaran fonksiyon
   Future<void> _connect() async {
     if (selectedProfile == null || _isConnecting) return;
 
@@ -260,7 +259,6 @@ class _LoginScreenState extends State<LoginScreen> {
           pass: selectedProfile!.password,
           port: int.tryParse(selectedProfile!.port) ?? 21,
           securityType: secType,
-          // passiveMode ve binaryMode aktif entegrasyonu
         );
         
         await ftp.connect().timeout(const Duration(seconds: 10));
@@ -284,7 +282,6 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (errorMessage.isNotEmpty) {
-      // FtpCafe tarzı Login error penceresi
       showDialog(
         context: context,
         builder: (c) => AlertDialog(
@@ -299,7 +296,6 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     } else {
-      // Bilgiler doğru, direkt dosya yöneticisine geç
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => DualFileManagerScreen(profile: selectedProfile!)),
@@ -819,6 +815,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remotePath = '/';
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
+  
+  // Jet hızında gezinme için önbellek sistemi
+  final Map<String, List<RemoteEntry>> _remoteDirectoryCache = {};
+
+  // Arka planda sunucu teyidi yapılırken aynı anda üst üste istek atılmasını engelleyen güvenlik kilidi
+  bool _isFetchingRemote = false;
 
   @override
   void initState() {
@@ -842,17 +844,21 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // --- GERİ TUŞU YAKALAMA ---
+  // --- GERİ TUŞU YAKALAMA VE RACE CONDITION ENGELİ ---
   Future<bool> _onWillPop() async {
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
-        final parent = Directory(localPath).parent.path;
-        _loadLocal(parent);
+        if (!localLoading) {
+           final parent = Directory(localPath).parent.path;
+           _loadLocal(parent);
+        }
         return false;
       }
     } else {
       if (remotePath.isNotEmpty && remotePath != '/') {
-        _changeRemoteDirectory('..');
+        if (!remoteLoading) {
+          _changeRemoteDirectory('..');
+        }
         return false;
       }
     }
@@ -898,7 +904,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 onChanged: (val) {
                   setState(() => _sortMethod = val!);
                   Navigator.pop(context);
-                  _tabController.index == 0 ? _loadLocal(localPath) : _loadRemote();
+                  if (_tabController.index == 0) {
+                     _loadLocal(localPath);
+                  } else {
+                     _loadRemote(useCache: false); 
+                  }
                 },
               );
             }).toList(),
@@ -946,6 +956,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Path does not exist.')));
       }
     } else {
+      if (remoteLoading) return;
       setState(() => remoteLoading = true);
       try {
         if (_isSftp) {
@@ -954,7 +965,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           await _ftpConnect!.changeDirectory(newPath);
           remotePath = newPath;
         }
-        await _loadRemote();
+        await _loadRemote(useCache: false);
       } catch (e) {
         setState(() => remoteLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -1033,20 +1044,38 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         await _ftpConnect!.connect();
         if (remotePath != '/') await _ftpConnect!.changeDirectory(remotePath);
       }
-      _loadRemote();
+      _loadRemote(useCache: false);
     } catch (e) {
       setState(() { remoteLoading = false; remoteError = e.toString(); });
     }
   }
 
-  Future<void> _loadRemote() async {
-    setState(() => remoteLoading = true);
+  // Önbellek kullanabilen ve arka planda sessizce (Stale-While-Revalidate) teyit eden yükleyici
+  Future<void> _loadRemote({bool useCache = true}) async {
+    bool hasCache = _remoteDirectoryCache.containsKey(remotePath);
+
+    // 1. AŞAMA: Önbellekte varsa anında göster (Jet Hızı)
+    if (useCache && hasCache) {
+      setState(() {
+        remoteFiles = _remoteDirectoryCache[remotePath]!;
+        remoteLoading = false; 
+      });
+    } else {
+      setState(() => remoteLoading = true);
+    }
+
+    // Yarış durumunu (Race condition) engelle
+    if (_isFetchingRemote) return;
+    _isFetchingRemote = true;
+
+    // 2. AŞAMA: Arka planda sessizce sunucuya bağlanıp güncel listeyi çek
     try {
+      String fetchPath = remotePath; // Sorgu anındaki dizini aklımızda tutalım
       List<RemoteEntry> folders = [];
       List<RemoteEntry> files = [];
 
       if (_isSftp) {
-        final content = await _sftpClient!.listdir(remotePath == '/' ? '.' : remotePath);
+        final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath);
         for (var e in content) {
           if (e.filename == '.' || e.filename == '..') continue;
           final isDir = e.attr.isDirectory;
@@ -1063,41 +1092,54 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       
       _sortRemoteFiles(folders, files);
+      final resultList = [...folders, ...files];
 
-      setState(() {
-        remoteFiles = [...folders, ...files];
-        remoteLoading = false;
-        _selectedRemoteNames.clear();
-      });
+      // Önbelleği her zaman en güncel haliyle yenile
+      _remoteDirectoryCache[fetchPath] = resultList;
+
+      // Eğer kullanıcı hala aynı klasördeyse ekranı son veriyle gizlice güncelle
+      if (mounted && remotePath == fetchPath) {
+        setState(() {
+          remoteFiles = resultList;
+          remoteLoading = false;
+          if (!hasCache || !useCache) _selectedRemoteNames.clear();
+        });
+      }
     } catch (e) {
-      setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+      if (mounted && (!hasCache || !useCache)) {
+        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+      }
+    } finally {
+      _isFetchingRemote = false; // İşlem bitti, kilidi aç
     }
   }
 
+  // String parçalama yöntemi sayesinde RangeError (-1) çökmesi engellendi
   Future<void> _changeRemoteDirectory(String dirName) async {
+    if (remoteLoading) return; // Race condition kalkanı
     setState(() => remoteLoading = true);
     try {
-      if (_isSftp) {
-        if (dirName == '..') {
-          if (remotePath != '/') {
-            int lastIdx = remotePath.lastIndexOf('/');
-            remotePath = lastIdx <= 0 ? '/' : remotePath.substring(0, lastIdx);
-          }
+      String targetPath = remotePath;
+      if (dirName == '..') {
+        if (remotePath != '/' && remotePath.isNotEmpty) {
+          // split('/') ile güvenli bir şekilde ana dizini tespit et
+          List<String> parts = remotePath.split('/').where((e) => e.isNotEmpty).toList();
+          if (parts.isNotEmpty) parts.removeLast();
+          targetPath = parts.isEmpty ? '/' : '/${parts.join('/')}';
         } else {
-          remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
+          targetPath = '/';
         }
       } else {
-        await _ftpConnect!.changeDirectory(dirName);
-        if (dirName == '..') {
-          if (remotePath != '/') {
-            int lastIdx = remotePath.lastIndexOf('/');
-            remotePath = lastIdx == 0 ? '/' : remotePath.substring(0, lastIdx);
-          }
-        } else {
-          remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
-        }
+        targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
       }
-      await _loadRemote();
+
+      if (_isSftp) {
+        remotePath = targetPath;
+      } else {
+        await _ftpConnect!.changeDirectory(dirName);
+        remotePath = targetPath;
+      }
+      await _loadRemote(useCache: true);
     } catch (e) {
       setState(() => remoteLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -1131,7 +1173,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.makeDirectory(name);
                   }
-                  _loadRemote();
+                  _remoteDirectoryCache.remove(remotePath); 
+                  _loadRemote(useCache: false);
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1170,7 +1213,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.rename(oldName, newName);
                   }
-                  _loadRemote();
+                  _remoteDirectoryCache.remove(remotePath);
+                  _loadRemote(useCache: false);
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1218,7 +1262,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             }
           } catch (_) {}
         }
-        _loadRemote();
+        _remoteDirectoryCache.remove(remotePath);
+        _loadRemote(useCache: false);
       }
     }
   }
@@ -1437,7 +1482,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     if (isLocal) {
       _selectedLocalPaths.clear();
-      _loadRemote();
+      _remoteDirectoryCache.remove(remotePath); 
+      _loadRemote(useCache: false);
     } else {
       _selectedRemoteNames.clear();
       _loadLocal(localPath);
@@ -1535,7 +1581,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 } else if (value == 'Sort') {
                   _showSortDialog();
                 } else if (value == 'Refresh') {
-                  isLocal ? _loadLocal(localPath) : _loadRemote();
+                  isLocal ? _loadLocal(localPath) : _loadRemote(useCache: false);
                 } else if (value == 'SelectAll') {
                   setState(() {
                     if (isLocal) {
@@ -1595,12 +1641,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent),
                     onPressed: () {
                       if (isLocal) {
-                        if (localPath != '/storage/emulated/0' && localPath != '/') {
+                        if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') {
                           final parent = Directory(localPath).parent.path;
                           _loadLocal(parent);
                         }
                       } else {
-                        _changeRemoteDirectory('..');
+                        if (!remoteLoading) _changeRemoteDirectory('..'); // Yüklenirken engellenir
                       }
                     },
                   ),
@@ -1717,6 +1763,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             ],
           ),
           onTap: () {
+            if (remoteLoading) return; // Arka arkaya spam'i ve yarış durumunu engeller
             if (isDir) _changeRemoteDirectory(entry.name);
             else {
               setState(() {
