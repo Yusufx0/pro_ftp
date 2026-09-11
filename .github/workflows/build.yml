@@ -26,6 +26,9 @@ jobs:
       - name: Paketleri İndir
         run: flutter pub get
 
+      - name: Generate App Icons
+        run: flutter pub run flutter_launcher_icons
+
       - name: Release APK Derle (Keystore burada devreye girer)
         run: flutter build apk --release
 
