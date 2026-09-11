@@ -1,23 +1,36 @@
 name: Build APK
+
 on:
   push:
     branches: [ "main" ]
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Kodu Kopyala
         uses: actions/checkout@v3
+
+      - name: Java 17 Kurulumu (Derleme için gerekli)
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
       - name: Flutter Kur
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-      - name: Paketleri Indir
+
+      - name: Paketleri İndir
         run: flutter pub get
-      - name: APK Derle
-        run: flutter build apk --debug
-      - name: APK'yi Yukle
+
+      - name: Release APK Derle (Keystore burada devreye girer)
+        run: flutter build apk --release
+
+      - name: APK'yı Yükle
         uses: actions/upload-artifact@v4
         with:
-          name: FTP-PRO-APK
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: FTP-PRO-APK-RELEASE
+          path: build/app/outputs/flutter-apk/app-release.apk
