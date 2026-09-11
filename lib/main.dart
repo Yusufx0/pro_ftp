@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:ftpconnect/ftpconnect.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -466,7 +467,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   late TabController _tabController;
   
   String _sortMethod = 'Name'; 
-  String localPath = '/storage/emulated/0'; // Orijinal varsayılan yol
+  String localPath = ''; 
   List<FileSystemEntity> localFiles = [];
   bool localLoading = true;
   final Set<String> _selectedLocalPaths = {};
@@ -598,10 +599,20 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- LOCAL LOGIC (ORİJİNAL SORUNSUZ DOSYA AYIRMA SİSTEMİ) ---
+  // --- LOCAL LOGIC (PATH_PROVIDER VE GÜVENLİ YALITIM EKLENDİ) ---
   Future<void> _initLocal() async {
     await Permission.manageExternalStorage.request();
     await Permission.storage.request();
+    
+    if (localPath.isEmpty || localPath == '/storage/emulated/0') {
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        localPath = directory.path;
+      } catch (e) {
+        localPath = '/storage/emulated/0'; 
+      }
+    }
+    
     _loadLocal(localPath);
   }
 
@@ -614,7 +625,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         List<FileSystemEntity> folders = [];
         List<FileSystemEntity> files = [];
         
-        // Eskiden çalışan orijinal yapıya geri dönüldü:
         for (var e in entities) {
           if (e is Directory) {
             folders.add(e);
@@ -638,7 +648,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- REMOTE LOGIC ---
+  // --- REMOTE LOGIC (KÜÇÜK HARFLİ GÜVENLİ İLETİŞİM) ---
   Future<void> _initRemote() async {
     setState(() { remoteLoading = true; remoteError = ''; });
     try {
@@ -1204,7 +1214,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 
-  // --- BURASI ORİJİNAL ÇALIŞAN HALİNE ÇEVRİLDİ ---
   Widget _buildLocalList() {
     if (localLoading) return const Center(child: CircularProgressIndicator());
     return ListView.separated(
