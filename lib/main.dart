@@ -498,18 +498,17 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // --- GÜNCELLENMİŞ GÜVENLİ SORTING LOGIC ---
+  // --- SORTING LOGIC ---
   void _sortLocalFiles(List<FileSystemEntity> folders, List<FileSystemEntity> files) {
     if (_sortMethod == 'Name') {
       folders.sort((a, b) => a.path.split('/').last.toLowerCase().compareTo(b.path.split('/').last.toLowerCase()));
       files.sort((a, b) => a.path.split('/').last.toLowerCase().compareTo(b.path.split('/').last.toLowerCase()));
     } else if (_sortMethod == 'Size') {
-      // Çökme önleyici güvenli boyut sıralaması
       files.sort((a, b) {
         int aSize = 0, bSize = 0;
         try { aSize = File(a.path).lengthSync(); } catch (_) {}
         try { bSize = File(b.path).lengthSync(); } catch (_) {}
-        return bSize.compareTo(aSize); // Büyükten küçüğe
+        return bSize.compareTo(aSize); 
       });
     }
   }
@@ -600,7 +599,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- LOCAL LOGIC (TÜM DOSYALARI GÖREBİLMEK İÇİN GÜNCELLENDİ) ---
+  // --- LOCAL LOGIC ---
   Future<void> _initLocal() async {
     await Permission.manageExternalStorage.request();
     await Permission.storage.request();
@@ -627,11 +626,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         List<FileSystemEntity> files = [];
         
         for (var e in entities) {
-          // Güncelleme: Tam isabetle dosya/klasör ayrımı (is Directory yerine isDirectorySync kullanıldı)
           if (FileSystemEntity.isDirectorySync(e.path)) {
             folders.add(e);
           } else {
-            files.add(e); // Klasör değilse kesinlikle dosya listesine al
+            files.add(e); 
           }
         }
         
@@ -650,15 +648,15 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // --- REMOTE LOGIC (TÜM DOSYALARI GÖREBİLMEK İÇİN GÜNCELLENDİ) ---
+  // --- REMOTE LOGIC ---
   Future<void> _initRemote() async {
     setState(() { remoteLoading = true; remoteError = ''; });
     try {
-      SecurityType secType = SecurityType.FTP;
+      SecurityType secType = SecurityType.ftp;
       if (widget.profile.mode.contains('FTPES')) {
-        secType = SecurityType.FTPES;
+        secType = SecurityType.ftpes;
       } else if (widget.profile.mode.contains('FTPS')) {
-        secType = SecurityType.FTPS;
+        secType = SecurityType.ftps;
       }
       
       _ftpConnect = FTPConnect(
@@ -687,7 +685,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       List<FTPEntry> folders = [];
       List<FTPEntry> files = [];
 
-      // Güncelleme: Yalnızca açıkça "dosya" diyenleri değil, klasör haricindeki HER ŞEYİ dosya sayıyoruz.
       for (var e in content) {
         if (e.type == FTPEntryType.dir) {
           folders.add(e);
@@ -1224,7 +1221,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entity = localFiles[index];
-        // Güncelleme: UI tarafında da klasör ayrımını isDirectorySync ile sağlamlaştırdık
         final isDir = FileSystemEntity.isDirectorySync(entity.path);
         final name = entity.path.split('/').last;
         
