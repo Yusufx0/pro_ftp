@@ -225,7 +225,7 @@ class _LoginScreenState extends State<LoginScreen> {
     String errorMessage = "";
     int portToUse = int.tryParse(selectedProfile!.port) ?? 21;
 
-    // FTPS WRONG_VERSION_NUMBER hatasını engellemek için akıllı port yönlendirmesi
+    // FTPS ve SFTP Akıllı Port Yönlendirmesi
     if (selectedProfile!.mode.contains('FTPS') && portToUse == 21) {
       portToUse = 990;
     } else if (selectedProfile!.mode.contains('SFTP') && portToUse == 21) {
@@ -237,7 +237,7 @@ class _LoginScreenState extends State<LoginScreen> {
         final socket = await SSHSocket.connect(
           selectedProfile!.host, 
           portToUse
-        ).timeout(const Duration(seconds: 10)); // 10 saniye katı kural
+        ).timeout(const Duration(seconds: 15));
 
         List<SSHKeyPair> identities = [];
         if (selectedProfile!.privateKey.isNotEmpty) {
@@ -250,8 +250,10 @@ class _LoginScreenState extends State<LoginScreen> {
         final client = SSHClient(
           socket,
           username: selectedProfile!.user,
-          identities: identities,
-          onPasswordRequest: () => selectedProfile!.password,
+          identities: identities.isNotEmpty ? identities : null,
+          onPasswordRequest: selectedProfile!.password.isNotEmpty 
+              ? () => selectedProfile!.password 
+              : null,
         );
         
         await client.authenticated;
@@ -268,10 +270,10 @@ class _LoginScreenState extends State<LoginScreen> {
           pass: selectedProfile!.password,
           port: portToUse,
           securityType: secType,
-          timeout: 10, 
+          timeout: 15, 
         );
         
-        await ftp.connect().timeout(const Duration(seconds: 10));
+        await ftp.connect().timeout(const Duration(seconds: 15));
         await ftp.disconnect();
       }
     } catch (e) {
@@ -281,7 +283,7 @@ class _LoginScreenState extends State<LoginScreen> {
       } else if (errStr.contains('socket') || errStr.contains('failed host lookup') || errStr.contains('connection refused')) {
         errorMessage = "Could not connect to server. Check host or port.";
       } else if (errStr.contains('timeout')) {
-        errorMessage = "Connection timed out. Server is not responding.";
+        errorMessage = "Connection timed out. Server is not responding on port $portToUse.";
       } else if (errStr.contains('handshake') || errStr.contains('wrong_version') || errStr.contains('tls')) {
         errorMessage = "SSL/TLS Handshake Error. Check server mode (FTPS/FTPES/Plain).";
       } else {
@@ -298,7 +300,7 @@ class _LoginScreenState extends State<LoginScreen> {
         context: context,
         builder: (c) => AlertDialog(
           title: const Text("Login error", style: TextStyle(color: Colors.lightBlueAccent)),
-          content: Text("$errorMessage\n$errorMessage"),
+          content: Text(errorMessage),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(c),
@@ -679,7 +681,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         if (val != null) {
                           setState(() {
                             selectedMode = val;
-                            // Akıllı port düzeltici: Profil düzenlerken doğru porta geçirir
                             if (selectedMode == 'SFTP (FTP over SSH)') {
                               portCtrl.text = '22';
                             } else if (selectedMode == 'FTPS (Implicit secure FTP)') {
@@ -861,10 +862,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // --- KAPSAMLI BAĞLANTI KOPMA YAKALAYICI (Passive Error Detector) ---
   bool _isConnectionError(dynamic e) {
     String err = e.toString().toLowerCase();
-    // Socket, Handshake ve sürüm uyumsuzlukları da dahil tüm ağ kopmaları eklendi
     return err.contains('socket') || err.contains('closed') || err.contains('pipe') || 
            err.contains('disconnect') || err.contains('connection') || err.contains('timeout') ||
            err.contains('handshake') || err.contains('wrong_version') || err.contains('tls') ||
@@ -877,7 +876,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     
     showDialog(
       context: context,
-      barrierDismissible: false, // Dışarı basarak kapatılamaz
+      barrierDismissible: false, 
       builder: (c) => AlertDialog(
         title: const Row(
           children: [
@@ -891,17 +890,17 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           TextButton(
             onPressed: () {
               _isDisconnectDialogShowing = false;
-              Navigator.pop(c); // Popup'ı kapat, ekranda kal (Offline gezinme)
+              Navigator.pop(c); 
             },
             child: const Text('Stay', style: TextStyle(color: Colors.white)),
           ),
           TextButton(
             onPressed: () {
               _isDisconnectDialogShowing = false;
-              Navigator.pop(c); // Popup'ı kapat
+              Navigator.pop(c); 
               _ftpConnect?.disconnect();
               _sshClient?.close();
-              Navigator.pop(context); // Giriş ekranına dön
+              Navigator.pop(context); 
             },
             child: const Text('Logout', style: TextStyle(color: Colors.redAccent)),
           ),
@@ -1069,7 +1068,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     try {
       if (_isSftp) {
-        final socket = await SSHSocket.connect(widget.profile.host, portToUse).timeout(const Duration(seconds: 10)); // 10s Kesin Süre
+        final socket = await SSHSocket.connect(widget.profile.host, portToUse).timeout(const Duration(seconds: 15));
         List<SSHKeyPair> identities = [];
         if (widget.profile.privateKey.isNotEmpty) {
           final keyFile = File(widget.profile.privateKey);
@@ -1080,8 +1079,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         _sshClient = SSHClient(
           socket,
           username: widget.profile.user,
-          identities: identities,
-          onPasswordRequest: () => widget.profile.password,
+          identities: identities.isNotEmpty ? identities : null,
+          onPasswordRequest: widget.profile.password.isNotEmpty 
+              ? () => widget.profile.password 
+              : null,
         );
         _sftpClient = await _sshClient!.sftp();
       } else {
@@ -1095,11 +1096,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           pass: widget.profile.password,
           port: portToUse,
           securityType: secType,
-          timeout: 10,
+          timeout: 15,
         );
         
-        // Timeout kalkanı sayesinde kilitlenmesi tamamen engellendi
-        await _ftpConnect!.connect().timeout(const Duration(seconds: 10));
+        await _ftpConnect!.connect().timeout(const Duration(seconds: 15));
       }
       _goToRemotePath(remotePath);
     } catch (e) {
@@ -1144,8 +1144,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       List<RemoteEntry> files = [];
 
       if (_isSftp) {
-        // SFTP için Katı Kalkan (10s)
-        final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath).timeout(const Duration(seconds: 10));
+        final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath).timeout(const Duration(seconds: 15));
         for (var e in content) {
           if (e.filename == '.' || e.filename == '..') continue;
           final isDir = e.attr.isDirectory;
@@ -1153,12 +1152,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           if (isDir) folders.add(entry); else files.add(entry);
         }
       } else {
-        // FTPES ve Düz FTP için Katı Kalkan (10s)
-        await _ftpConnect!.changeDirectory(fetchPath).timeout(const Duration(seconds: 10));
-        final content = await _ftpConnect!.listDirectoryContent().timeout(const Duration(seconds: 10));
+        await _ftpConnect!.changeDirectory(fetchPath).timeout(const Duration(seconds: 15));
+        final content = await _ftpConnect!.listDirectoryContent().timeout(const Duration(seconds: 15));
         
         for (var e in content) {
-          // NOKTA (Gizli Klasör) FİLTRESİ KÖKÜNDEN ÇÖZÜLDÜ
           if (e.name == '.' || e.name == '..' || e.name.trim().isEmpty) continue; 
           
           final isDir = e.type == FTPEntryType.dir;
@@ -1184,10 +1181,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       if (mounted && remotePath == fetchPath) {
         if (!hasCache) {
-          // Önbellek yoksa ekrana hatayı bas
           setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
         } else {
-          // Önbellek varken arka plan hatası aldıysa sadece spinner'ı kapatıp uyarı bas
           setState(() { remoteLoading = false; });
           if (!_isDisconnectDialogShowing) {
              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync error: $e')));
