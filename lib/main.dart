@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -124,14 +123,6 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
-// Güvenlik: Girdi temizleme (Path Traversal engeli)
-bool isValidName(String name) {
-  if (name.isEmpty || name.contains('/') || name.contains('\\') || name.contains('..')) {
-    return false;
-  }
-  return true;
-}
-
 // --- GİRİŞ EKRANI (LOGIN) ---
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -223,25 +214,9 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // Bağlantıyı test edip hata varsa FtpCafe tarzı Login error penceresi çıkaran fonksiyon
   Future<void> _connect() async {
     if (selectedProfile == null || _isConnecting) return;
-
-    // Güvenlik Uyarısı: Düz FTP kullanımı tespiti
-    if (selectedProfile!.mode == 'FTP') {
-      bool proceed = await showDialog(
-        context: context,
-        builder: (c) => AlertDialog(
-          title: const Text("Security Warning", style: TextStyle(color: Colors.orangeAccent)),
-          content: const Text("You are connecting via plain FTP. Your password and data will be sent UNENCRYPTED over the network. It is highly recommended to use SFTP or FTPS.\n\nDo you still want to connect?"),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Cancel")),
-            TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Connect Anyway", style: TextStyle(color: Colors.redAccent))),
-          ],
-        )
-      ) ?? false;
-      
-      if (!proceed) return;
-    }
 
     setState(() {
       _isConnecting = true;
@@ -269,61 +244,12 @@ class _LoginScreenState extends State<LoginScreen> {
           username: selectedProfile!.user,
           identities: identities,
           onPasswordRequest: () => selectedProfile!.password,
-          // GÜVENLİK KATI: SFTP Host Key (MITM) Doğrulaması
-          onBadHostKey: (String host, int port, String fingerprint) async {
-            final String storageKey = 'trusted_host_${host}_$port';
-            final String? trustedFingerprint = await _secureStorage.read(key: storageKey);
-
-            if (trustedFingerprint == fingerprint) {
-              return true; // Anahtar daha önce onaylanmış ve eşleşiyor
-            }
-
-            // Anahtar eşleşmedi veya ilk bağlantı, kullanıcıya sor
-            Completer<bool> completer = Completer<bool>();
-            if (context.mounted) {
-              showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (BuildContext context) {
-                  return AlertDialog(
-                    title: const Text("Security: Unknown Host Key", style: TextStyle(color: Colors.orangeAccent)),
-                    content: Text(
-                      "The server's host key is unknown or has changed.\n\n"
-                      "Fingerprint:\n$fingerprint\n\n"
-                      "Do you trust this server? (If you don't recognize this, you might be under a Man-in-the-Middle attack)."
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () {
-                          Navigator.pop(context);
-                          completer.complete(false);
-                        },
-                        child: const Text("Reject & Disconnect", style: TextStyle(color: Colors.redAccent)),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          await _secureStorage.write(key: storageKey, value: fingerprint);
-                          Navigator.pop(context);
-                          completer.complete(true);
-                        },
-                        child: const Text("Trust & Connect"),
-                      ),
-                    ],
-                  );
-                },
-              );
-            } else {
-              completer.complete(false);
-            }
-            return completer.future;
-          },
         );
         
         await client.authenticated;
         await client.sftp();
         client.close();
       } else {
-        // FTP/FTPS/FTPES Bağlantısı (Dart default SecureSocket TLS 1.2/1.3 kullanır)
         SecurityType secType = SecurityType.ftp;
         if (selectedProfile!.mode.contains('FTPES')) secType = SecurityType.ftpes;
         if (selectedProfile!.mode.contains('FTPS')) secType = SecurityType.ftps;
@@ -334,6 +260,7 @@ class _LoginScreenState extends State<LoginScreen> {
           pass: selectedProfile!.password,
           port: int.tryParse(selectedProfile!.port) ?? 21,
           securityType: secType,
+          // passiveMode ve binaryMode aktif entegrasyonu
         );
         
         await ftp.connect().timeout(const Duration(seconds: 10));
@@ -341,10 +268,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       String errStr = e.toString().toLowerCase();
-      // GÜVENLİK KATI: FTPS/FTPES Sertifika Hatalarını Yakalama (Strict Root CA Validation)
-      if (errStr.contains('handshake') || errStr.contains('certificate')) {
-        errorMessage = "Security Alert: Invalid or untrusted SSL/TLS certificate. The connection was blocked to protect your data.";
-      } else if (errStr.contains('530') || errStr.contains('auth') || errStr.contains('permission') || errStr.contains('credential') || errStr.contains('login')) {
+      if (errStr.contains('530') || errStr.contains('auth') || errStr.contains('permission') || errStr.contains('credential') || errStr.contains('login')) {
         errorMessage = "Invalid user name or password.";
       } else if (errStr.contains('socket') || errStr.contains('failed host lookup') || errStr.contains('connection refused')) {
         errorMessage = "Could not connect to server. Check host or port.";
@@ -360,11 +284,12 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (errorMessage.isNotEmpty) {
+      // FtpCafe tarzı Login error penceresi
       showDialog(
         context: context,
         builder: (c) => AlertDialog(
           title: const Text("Login error", style: TextStyle(color: Colors.lightBlueAccent)),
-          content: Text(errorMessage),
+          content: Text("$errorMessage\n$errorMessage"),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(c),
@@ -374,6 +299,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     } else {
+      // Bilgiler doğru, direkt dosya yöneticisine geç
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => DualFileManagerScreen(profile: selectedProfile!)),
@@ -387,9 +313,9 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: const Row(
           children: [
-            Icon(Icons.security, color: Colors.blueAccent),
+            Icon(Icons.public, color: Colors.blueAccent),
             SizedBox(width: 8),
-            Text('Ftp Master Secure'),
+            Text('Ftp Master'),
           ],
         ),
         actions: [
@@ -430,7 +356,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       onPressed: _isConnecting ? null : _connect,
                       child: _isConnecting 
                           ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Text('Connect Securely', style: TextStyle(fontSize: 16)),
+                          : const Text('Connect', style: TextStyle(fontSize: 16)),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -474,7 +400,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController localPathCtrl;
   late TextEditingController remotePathCtrl;
   
-  String selectedMode = 'SFTP (FTP over SSH)'; // Varsayılan olarak en güvenli yöntem seçili gelir
+  String selectedMode = 'FTP';
   String selectedCharset = 'UTF-8';
   bool savePass = true;
   bool isPassive = true;
@@ -497,13 +423,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     userCtrl = TextEditingController(text: widget.profile?.user ?? '');
     passCtrl = TextEditingController(text: widget.profile?.password ?? '');
     privateKeyCtrl = TextEditingController(text: widget.profile?.privateKey ?? '');
-    portCtrl = TextEditingController(text: widget.profile?.port ?? '22');
+    portCtrl = TextEditingController(text: widget.profile?.port ?? '21');
     localPathCtrl = TextEditingController(text: widget.profile?.localPath ?? '');
     remotePathCtrl = TextEditingController(text: widget.profile?.remotePath ?? '');
     
     if (widget.profile != null) {
       selectedMode = widget.profile!.mode;
-      if (!ftpModes.contains(selectedMode)) selectedMode = 'SFTP (FTP over SSH)';
+      if (!ftpModes.contains(selectedMode)) selectedMode = 'FTP';
       savePass = widget.profile!.savePassword;
       isPassive = widget.profile!.passiveMode;
       isBinary = widget.profile!.binaryMode;
@@ -893,10 +819,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remotePath = '/';
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
-  
-  // HIZ İYİLEŞTİRMESİ: Jet hızında gezinmek için önbellek mekanizması
-  final Map<String, List<RemoteEntry>> _remoteCache = {};
-  final _secureStorage = const FlutterSecureStorage();
 
   @override
   void initState() {
@@ -920,6 +842,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
+  // --- GERİ TUŞU YAKALAMA ---
   Future<bool> _onWillPop() async {
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
@@ -975,11 +898,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 onChanged: (val) {
                   setState(() => _sortMethod = val!);
                   Navigator.pop(context);
-                  // Önbelleği temizle ve yeniden yükle ki sıralama güncellensin
-                  if (_tabController.index == 1) {
-                    _remoteCache.remove(remotePath); 
-                  }
-                  _tabController.index == 0 ? _loadLocal(localPath) : _loadRemote(forceRefresh: true);
+                  _tabController.index == 0 ? _loadLocal(localPath) : _loadRemote();
                 },
               );
             }).toList(),
@@ -1096,13 +1015,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           username: widget.profile.user,
           identities: identities,
           onPasswordRequest: () => widget.profile.password,
-          // İç ekran için de parmak izi doğrulamasını ekliyoruz
-          onBadHostKey: (String host, int port, String fingerprint) async {
-             final String storageKey = 'trusted_host_${host}_$port';
-             final String? trustedFingerprint = await _secureStorage.read(key: storageKey);
-             if (trustedFingerprint == fingerprint) return true;
-             return false; // Login ekranında onaylandığı için burada sadece kontrol ediyoruz
-          }
         );
         _sftpClient = await _sshClient!.sftp();
       } else {
@@ -1127,24 +1039,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  // Hız İyileştirmesi: forceRefresh true gelmezse önce önbelleğe (cache) bakar
-  Future<void> _loadRemote({bool forceRefresh = false}) async {
-    if (!forceRefresh && _remoteCache.containsKey(remotePath)) {
-      setState(() {
-        remoteFiles = _remoteCache[remotePath]!;
-        remoteLoading = false;
-        _selectedRemoteNames.clear();
-      });
-      // Arka planda listeyi güncelle, değişiklik varsa yansıt (jet hızı hissi)
-      _fetchRemoteDataAndCache();
-      return;
-    }
-
+  Future<void> _loadRemote() async {
     setState(() => remoteLoading = true);
-    await _fetchRemoteDataAndCache();
-  }
-
-  Future<void> _fetchRemoteDataAndCache() async {
     try {
       List<RemoteEntry> folders = [];
       List<RemoteEntry> files = [];
@@ -1167,26 +1063,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       
       _sortRemoteFiles(folders, files);
-      List<RemoteEntry> resultList = [...folders, ...files];
-      
-      _remoteCache[remotePath] = resultList;
 
-      if (mounted) {
-        setState(() {
-          remoteFiles = resultList;
-          remoteLoading = false;
-          _selectedRemoteNames.clear();
-        });
-      }
+      setState(() {
+        remoteFiles = [...folders, ...files];
+        remoteLoading = false;
+        _selectedRemoteNames.clear();
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
-      }
+      setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
     }
   }
 
   Future<void> _changeRemoteDirectory(String dirName) async {
-    // UI tepkiselliği için anında yükleme durumuna geç
     setState(() => remoteLoading = true);
     try {
       if (_isSftp) {
@@ -1209,7 +1097,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           remotePath = remotePath == '/' ? '/$dirName' : '$remotePath/$dirName';
         }
       }
-      await _loadRemote(); // Önbellekli yükleme
+      await _loadRemote();
     } catch (e) {
       setState(() => remoteLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -1229,12 +1117,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
-              String name = ctrl.text.trim();
-              if (!isValidName(name)) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid folder name.')));
-                return;
-              }
               Navigator.pop(c);
+              String name = ctrl.text.trim();
+              if (name.isEmpty) return;
 
               if (isLocal) {
                 Directory('$localPath/$name').createSync();
@@ -1246,7 +1131,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.makeDirectory(name);
                   }
-                  _loadRemote(forceRefresh: true); // Değişiklik oldu, zorunlu yenile
+                  _loadRemote();
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1271,12 +1156,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
-              String newName = ctrl.text.trim();
-              if (!isValidName(newName) || newName == (isLocal ? oldName.split('/').last : oldName)) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid or unchanged name.')));
-                return;
-              }
               Navigator.pop(c);
+              String newName = ctrl.text.trim();
+              if (newName.isEmpty || newName == (isLocal ? oldName.split('/').last : oldName)) return;
 
               if (isLocal) {
                 File(oldName).renameSync('$localPath/$newName');
@@ -1288,7 +1170,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   } else {
                     await _ftpConnect!.rename(oldName, newName);
                   }
-                  _loadRemote(forceRefresh: true);
+                  _loadRemote();
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
                 }
@@ -1336,7 +1218,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             }
           } catch (_) {}
         }
-        _loadRemote(forceRefresh: true);
+        _loadRemote();
       }
     }
   }
@@ -1555,7 +1437,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     if (isLocal) {
       _selectedLocalPaths.clear();
-      _loadRemote(forceRefresh: true);
+      _loadRemote();
     } else {
       _selectedRemoteNames.clear();
       _loadLocal(localPath);
@@ -1653,7 +1535,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 } else if (value == 'Sort') {
                   _showSortDialog();
                 } else if (value == 'Refresh') {
-                  isLocal ? _loadLocal(localPath) : _loadRemote(forceRefresh: true); // Gerçek yenileme
+                  isLocal ? _loadLocal(localPath) : _loadRemote();
                 } else if (value == 'SelectAll') {
                   setState(() {
                     if (isLocal) {
