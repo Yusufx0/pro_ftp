@@ -17,7 +17,7 @@ jobs:
       - name: APK Derle
         run: flutter build apk --debug
       - name: APK'yi Yukle
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: FTP-PRO-APK
           path: build/app/outputs/flutter-apk/app-debug.apk
