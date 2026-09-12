@@ -11,6 +11,7 @@ import 'package:dartssh2/dartssh2.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  NativeFtpClient.init(); // Progress dinleyicisi başlatılıyor
   runApp(const FtpProApp());
 }
 
@@ -127,6 +128,21 @@ String formatBytes(int bytes) {
 // --- YENİ NATIVE FTP KÖPRÜSÜ (Apache Commons Net ile Konuşur) ---
 class NativeFtpClient {
   static const platform = MethodChannel('ftp_native');
+  
+  // İlerleme yüzdesi için callback
+  static Function(int transferred, int total)? onProgress;
+
+  static void init() {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'progress') {
+        if (onProgress != null) {
+          int transferred = call.arguments['transferred'] ?? 0;
+          int total = call.arguments['total'] ?? 0;
+          onProgress!(transferred, total);
+        }
+      }
+    });
+  }
 
   static Future<void> connect(String mode, String host, int port, String user, String pass) async {
     await platform.invokeMethod('connect', {
@@ -136,6 +152,10 @@ class NativeFtpClient {
 
   static Future<void> disconnect() async {
     await platform.invokeMethod('disconnect');
+  }
+
+  static Future<void> cancel() async {
+    await platform.invokeMethod('cancel');
   }
 
   static Future<List<RemoteEntry>> list(String path) async {
@@ -291,7 +311,6 @@ class _LoginScreenState extends State<LoginScreen> {
         await client.sftp();
         client.close();
       } else {
-        // Native Köprü
         await NativeFtpClient.connect(
           selectedProfile!.mode,
           selectedProfile!.host,
@@ -1011,34 +1030,210 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     List<String> itemsToTransfer = isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList();
     if (itemsToTransfer.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No items selected.'))); return; }
 
-    showDialog(context: context, barrierDismissible: false, builder: (c) => AlertDialog(content: Row(children: [const CircularProgressIndicator(color: Colors.lightBlueAccent), const SizedBox(width: 20), Text(isLocal ? 'Uploading files...' : 'Downloading files...')])));
+    bool isTransferCancelled = false;
+    int successCount = 0; 
+    bool connectionLost = false;
+    
+    String currentFileName = "";
+    int currentFileIndex = 0;
+    int currentTransferred = 0;
+    int currentTotal = 0;
+    DateTime startTime = DateTime.now();
+    StateSetter? dialogSetState;
 
-    int successCount = 0; bool connectionLost = false;
-    for (String item in itemsToTransfer) {
+    // Durumu güncelleyen callback
+    void updateDialog(int transferred, int total) {
+      if (mounted && dialogSetState != null) {
+        dialogSetState!(() {
+          currentTransferred = transferred;
+          currentTotal = total;
+        });
+      }
+    }
+
+    // Native Bridge Callback Ayarla
+    NativeFtpClient.onProgress = updateDialog;
+
+    // TRANSFER STATUS EKRANI
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (context, setState) {
+          dialogSetState = setState;
+          double speedKBps = 0;
+          String speedStr = "0 KB/s";
+          String elapsedStr = "0s";
+          String etaStr = "Calculating...";
+          String sizeStr = "0 / 0 MB";
+          double percent = 0.0;
+          String percentStr = "0%";
+
+          if (currentTotal > 0) {
+            final elapsedSeconds = DateTime.now().difference(startTime).inSeconds;
+            if (elapsedSeconds > 0) {
+              speedKBps = (currentTransferred / 1024) / elapsedSeconds;
+              speedStr = "${speedKBps.toStringAsFixed(2)} KB/s";
+              if (speedKBps > 0) {
+                 double remainingSeconds = ((currentTotal - currentTransferred) / 1024) / speedKBps;
+                 etaStr = "<${remainingSeconds.ceil()}s";
+              }
+            }
+            elapsedStr = "${elapsedSeconds}s";
+            percent = currentTransferred / currentTotal;
+            percentStr = "${(percent * 100).toStringAsFixed(0)}%";
+            sizeStr = "${(currentTransferred / (1024*1024)).toStringAsFixed(2)} / ${(currentTotal / (1024*1024)).toStringAsFixed(2)} MB";
+          }
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2E35),
+            titlePadding: EdgeInsets.zero,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 20, 20, 10),
+                  child: Text('Transfer Status', style: TextStyle(color: Colors.lightBlueAccent, fontSize: 18)),
+                ),
+                Container(height: 2, color: Colors.lightBlueAccent),
+              ],
+            ),
+            contentPadding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(isLocal ? Icons.upload_file : Icons.download_file, color: isLocal ? Colors.orange : Colors.lightBlueAccent, size: 28),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(currentFileName, style: const TextStyle(color: Colors.white, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('$currentFileIndex/${itemsToTransfer.length}', style: const TextStyle(color: Colors.white70)),
+                      Text(speedStr, style: const TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: currentTotal > 0 ? (currentTransferred / currentTotal).clamp(0.0, 1.0) : 0.0,
+                    color: Colors.lightBlueAccent,
+                    backgroundColor: Colors.grey[700],
+                    minHeight: 4,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(percentStr, style: const TextStyle(color: Colors.white70)),
+                      Text(sizeStr, style: const TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Elapsed: $elapsedStr', style: const TextStyle(color: Colors.white70)),
+                      Text('ETA: $etaStr', style: const TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                  const SizedBox(height: 25),
+                  Center(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B), padding: const EdgeInsets.symmetric(horizontal: 30)),
+                      onPressed: () {
+                        isTransferCancelled = true;
+                        if (!_isSftp) NativeFtpClient.cancel();
+                      },
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    for (int i = 0; i < itemsToTransfer.length; i++) {
+      if (isTransferCancelled) break;
+      String item = itemsToTransfer[i];
+      
+      startTime = DateTime.now();
+      currentTransferred = 0;
+      currentTotal = 0;
+      currentFileName = isLocal ? File(item).path.split('/').last : item;
+      currentFileIndex = i + 1;
+      updateDialog(0, 0);
+
       try {
         if (isLocal) {
           File file = File(item);
           if (await file.exists()) {
-            if (_isSftp) {
+            currentTotal = file.lengthSync();
+            updateDialog(0, currentTotal);
+
+            if (_isSftp) { // SFTP Chunked Yükleme (Performanslı)
               final remoteFile = await _sftpClient!.open('$remotePath/${file.path.split('/').last}', mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
-              await remoteFile.write(file.openRead().cast<Uint8List>()); await remoteFile.close(); successCount++;
-            } else { await NativeFtpClient.upload(file.path, '$remotePath/${file.path.split('/').last}'); successCount++; }
+              Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
+                 await for (var chunk in source) {
+                    if (isTransferCancelled) throw Exception("Cancelled");
+                    currentTransferred += chunk.length;
+                    updateDialog(currentTransferred, currentTotal);
+                    yield Uint8List.fromList(chunk);
+                 }
+              }
+              await remoteFile.write(progressStream(file.openRead()));
+              await remoteFile.close(); 
+              successCount++;
+            } else { // Native FTP Upload
+              await NativeFtpClient.upload(file.path, '$remotePath/${file.path.split('/').last}');
+              if(!isTransferCancelled) successCount++;
+            }
           }
-        } else {
-          if (_isSftp) {
-             final remoteFile = await _sftpClient!.open('$remotePath/$item'); final localFile = File('$localPath/$item'); final sink = localFile.openWrite();
-             await for (var chunk in remoteFile.read()) { sink.add(chunk); } await sink.close(); successCount++;
-          } else { await NativeFtpClient.download(item, '$localPath/$item'); successCount++; }
+        } else { // İndirme (Download)
+          if (_isSftp) { // SFTP Chunked İndirme
+             final remoteFile = await _sftpClient!.open('$remotePath/$item'); 
+             currentTotal = remoteFile.attr.size ?? 0;
+             updateDialog(0, currentTotal);
+             
+             final localFile = File('$localPath/$item'); 
+             final sink = localFile.openWrite();
+             
+             await for (var chunk in remoteFile.read()) { 
+                if (isTransferCancelled) break;
+                sink.add(chunk); 
+                currentTransferred += chunk.length;
+                updateDialog(currentTransferred, currentTotal);
+             } 
+             await sink.close(); 
+             if (!isTransferCancelled) successCount++;
+          } else { // Native FTP Download
+             await NativeFtpClient.download(item, '$localPath/$item'); 
+             if(!isTransferCancelled) successCount++; 
+          }
         }
-      } catch (e) { if (_isConnectionError(e)) connectionLost = true; }
+      } catch (e) {
+        if (_isConnectionError(e)) connectionLost = true;
+      }
     }
+
+    if (mounted) Navigator.pop(context); // Diyaloğu kapat
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
-    if (mounted) Navigator.pop(context); 
     
-    if (connectionLost) _showDisconnectDialog();
-    else {
+    if (connectionLost) {
+      _showDisconnectDialog();
+    } else if (isTransferCancelled) {
+       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transfer cancelled')));
+    } else {
       showDialog(context: context, builder: (c) => AlertDialog(
           title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
           content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
