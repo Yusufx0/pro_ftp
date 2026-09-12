@@ -39,9 +39,9 @@ class MainActivity: FlutterActivity() {
                                 else -> FTPClient()
                             }
 
-                            // Kotlin Duration Hatasını Engelleyen Doğru Zaman Ayarları
+                            // Doğru Tipler: connectTimeout ve dataTimeout Duration, defaultTimeout ise Int (milisaniye) ister
                             ftpClient?.connectTimeout = Duration.ofMillis(10000)
-                            ftpClient?.defaultTimeout = 10000
+                            ftpClient?.setDefaultTimeout(10000)
                             ftpClient?.dataTimeout = Duration.ofMillis(10000)
 
                             ftpClient?.connect(host, port)
