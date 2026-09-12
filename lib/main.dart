@@ -715,11 +715,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   int _currentNetworkRequestId = 0;
   bool _isDisconnectDialogShowing = false;
   Timer? _keepAliveTimer;
+  bool _isAppPaused = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // Uygulama durumunu dinlemeye başla
+    WidgetsBinding.instance.addObserver(this); 
     if (widget.profile.localPath.isNotEmpty) localPath = widget.profile.localPath;
     else localPath = '/storage/emulated/0';
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
@@ -729,13 +730,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _initLocal();
     _initRemote();
     
-    // Ön plandayken 10 saniyede bir ping at
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this); // Dinleyiciyi kaldır
+    WidgetsBinding.instance.removeObserver(this); 
     _keepAliveTimer?.cancel();
     _sshClient?.close();
     if (!_isSftp) NativeFtpClient.disconnect();
@@ -743,31 +743,34 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // UYGULAMA ARKA PLANDAN ÖN PLANA GELDİĞİNDE TETİKLENİR
+  // UYGULAMA ARKA PLANA ATILDIĞINDA VE GERİ DÖNÜLDÜĞÜNDE TETİKLENİR
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // Uygulamaya geri dönüldü, bağlantıyı kontrol et
-      _pingServer().then((isAlive) {
-        if (!isAlive && !_isDisconnectDialogShowing) {
-          // Bağlantı kopmuşsa hata gösterme, sessizce yeniden bağlan!
-          _initRemote();
-        }
-      });
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _isAppPaused = true;
+    } else if (state == AppLifecycleState.resumed) {
+      _isAppPaused = false;
+      _pingServer(); // Döndüğünde sessizce ping atıp durum kontrolü yapar.
     }
   }
   
-  Future<bool> _pingServer() async {
-    if (_isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return true;
+  Future<void> _pingServer() async {
+    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return;
     try {
+      bool isAlive = false;
       if (_isSftp) {
-        await _sftpClient?.stat('.'); // SFTP İçin Ping
-        return true;
+        await _sftpClient?.stat('.'); 
+        isAlive = true;
       } else {
-        return await NativeFtpClient.noop(); // FTP/FTPS İçin Ping
+        isAlive = await NativeFtpClient.noop(); 
+      }
+      
+      // Eğer bağlantı kopmuşsa DİYALOG ÇIKARMADAN (silent) yeniden bağlanmayı dene
+      if (!isAlive) {
+        _initRemote(silent: true);
       }
     } catch (_) {
-      return false; // Bağlantı ölü
+      _initRemote(silent: true);
     }
   }
 
@@ -884,7 +887,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     } catch (_) { setState(() => localLoading = false); }
   }
 
-  Future<void> _initRemote() async {
+  Future<void> _initRemote({bool silent = false}) async {
     setState(() { remoteLoading = true; remoteError = ''; });
     int portToUse = int.tryParse(widget.profile.port) ?? 21;
     if (widget.profile.mode.contains('FTPS') && portToUse == 21) portToUse = 990;
@@ -901,28 +904,29 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         _sshClient = SSHClient(socket, username: widget.profile.user, identities: identities.isNotEmpty ? identities : null, onPasswordRequest: widget.profile.password.isNotEmpty ? () => widget.profile.password : null);
         _sftpClient = await _sshClient!.sftp();
       } else {
-        // Normal FTP/FTPS bağlanırken varsa eski bağlantıyı temizle
         await NativeFtpClient.disconnect();
         await NativeFtpClient.connect(widget.profile.mode, widget.profile.host, portToUse, widget.profile.user, widget.profile.password);
       }
-      _goToRemotePath(remotePath);
+      _goToRemotePath(remotePath, silent: silent);
     } catch (e) {
-      if (_isConnectionError(e)) _showDisconnectDialog();
-      setState(() { remoteLoading = false; remoteError = e.toString(); });
+      if (!silent && _isConnectionError(e)) _showDisconnectDialog();
+      if (mounted) {
+        setState(() { remoteLoading = false; remoteError = e.toString(); });
+      }
     }
   }
 
-  void _goToRemotePath(String targetPath) {
+  void _goToRemotePath(String targetPath, {bool silent = false}) {
     setState(() {
       remotePath = targetPath;
       remoteFiles = []; 
       remoteLoading = true; 
       remoteError = '';
     });
-    _fetchRemoteData(targetPath);
+    _fetchRemoteData(targetPath, silent: silent);
   }
 
-  Future<void> _fetchRemoteData(String fetchPath) async {
+  Future<void> _fetchRemoteData(String fetchPath, {bool silent = false}) async {
     int myRequestId = ++_currentNetworkRequestId;
     while (_isNetworkBusy) { await Future.delayed(const Duration(milliseconds: 10)); if (myRequestId != _currentNetworkRequestId) return; }
     _isNetworkBusy = true;
@@ -952,7 +956,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         setState(() { remoteFiles = resultList; remoteLoading = false; _selectedRemoteNames.clear(); });
       }
     } catch (e) {
-      if (_isConnectionError(e)) _showDisconnectDialog(); 
+      if (!silent && _isConnectionError(e)) _showDisconnectDialog(); 
       if (mounted && remotePath == fetchPath) {
         setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
       }
@@ -968,7 +972,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         targetPath = parts.isEmpty ? '/' : '/${parts.join('/')}';
       } else targetPath = '/';
     } else targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
-    _goToRemotePath(targetPath);
+    
+    // Klasöre tıklayarak geçiş yapıldığında silent=false (kullanıcı eylemi)
+    _goToRemotePath(targetPath, silent: false); 
   }
 
   void _createDirectory() {
@@ -1135,7 +1141,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     NativeFtpClient.onProgress = updateDialog;
 
-    // TRANSFER STATUS MODAL
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1393,7 +1398,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Widget _buildLocalList() {
     if (localLoading) return const Center(child: CircularProgressIndicator());
     return ListView.separated(
-      key: const PageStorageKey<String>('local_list'),
+      // Kaydırma (Scroll) pozisyonunu HER BİR KLASÖR DİZİNİ için ayrı hatırlar
+      key: PageStorageKey<String>('local_list_$localPath'),
       itemCount: localFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entity = localFiles[index]; final isDir = entity is Directory; final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
@@ -1411,7 +1417,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (remoteLoading) return const Center(child: CircularProgressIndicator());
     if (remoteError.isNotEmpty) return Center(child: Text(remoteError, style: const TextStyle(color: Colors.red)));
     return ListView.separated(
-      key: const PageStorageKey<String>('remote_list'),
+      // Kaydırma (Scroll) pozisyonunu HER BİR KLASÖR DİZİNİ için ayrı hatırlar
+      key: PageStorageKey<String>('remote_list_$remotePath'),
       itemCount: remoteFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entry = remoteFiles[index]; final isDir = entry.isDir; String sizeStr = isDir ? "" : formatBytes(entry.size);
