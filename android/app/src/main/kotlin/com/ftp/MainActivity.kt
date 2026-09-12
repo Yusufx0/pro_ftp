@@ -39,6 +39,10 @@ class MainActivity: FlutterActivity() {
                                 else -> FTPClient()
                             }
                             
+                            // Dosya aktarımı sırasında kontrol bağlantısının kopmasını engellemek için
+                            ftpClient?.controlKeepAliveTimeout = 15
+                            ftpClient?.controlKeepAliveReplyTimeout = 15000
+                            
                             ftpClient?.connect(host, port)
                             val success = ftpClient?.login(user, pass) ?: false
                             if (!success) throw Exception("Invalid user name or password.")
@@ -51,6 +55,11 @@ class MainActivity: FlutterActivity() {
                                 (ftpClient as FTPSClient).execPROT("P")
                             }
                             mainHandler.post { result.success(true) }
+                        }
+                        "noop" -> {
+                            // Arka planda sunucu bağlantısını canlı tutmak için (Ping)
+                            val success = ftpClient?.sendNoOp() ?: false
+                            mainHandler.post { result.success(success) }
                         }
                         "disconnect" -> {
                             if (ftpClient?.isConnected == true) {
@@ -112,7 +121,7 @@ class MainActivity: FlutterActivity() {
                                 throw Exception("Stream error: ${ftpClient?.replyString}")
                             }
                             
-                            val buffer = ByteArray(32 * 1024) // 32 KB Güvenli Akış Tamponu
+                            val buffer = ByteArray(32 * 1024)
                             var bytesRead: Int
                             var uploadedSize = 0L
                             var lastReportTime = System.currentTimeMillis()

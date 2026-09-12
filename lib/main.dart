@@ -147,6 +147,15 @@ class NativeFtpClient {
       'mode': mode, 'host': host, 'port': port, 'user': user, 'pass': pass
     });
   }
+  
+  static Future<bool> noop() async {
+    try {
+      final result = await platform.invokeMethod('noop');
+      return result == true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static Future<void> disconnect() async {
     await platform.invokeMethod('disconnect');
@@ -684,7 +693,7 @@ class DualFileManagerScreen extends StatefulWidget {
   State<DualFileManagerScreen> createState() => _DualFileManagerScreenState();
 }
 
-class _DualFileManagerScreenState extends State<DualFileManagerScreen> with SingleTickerProviderStateMixin {
+class _DualFileManagerScreenState extends State<DualFileManagerScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
   String _sortMethod = 'Name'; 
   String localPath = '/storage/emulated/0';
@@ -705,10 +714,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   bool _isNetworkBusy = false;
   int _currentNetworkRequestId = 0;
   bool _isDisconnectDialogShowing = false;
+  Timer? _keepAliveTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Uygulama durumunu dinlemeye başla
     if (widget.profile.localPath.isNotEmpty) localPath = widget.profile.localPath;
     else localPath = '/storage/emulated/0';
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
@@ -717,20 +728,51 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _tabController.addListener(() => setState(() {}));
     _initLocal();
     _initRemote();
+    
+    // Ön plandayken 10 saniyede bir ping at
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // Dinleyiciyi kaldır
+    _keepAliveTimer?.cancel();
     _sshClient?.close();
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
     super.dispose();
   }
 
+  // UYGULAMA ARKA PLANDAN ÖN PLANA GELDİĞİNDE TETİKLENİR
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Uygulamaya geri dönüldü, bağlantıyı kontrol et
+      _pingServer().then((isAlive) {
+        if (!isAlive && !_isDisconnectDialogShowing) {
+          // Bağlantı kopmuşsa hata gösterme, sessizce yeniden bağlan!
+          _initRemote();
+        }
+      });
+    }
+  }
+  
+  Future<bool> _pingServer() async {
+    if (_isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return true;
+    try {
+      if (_isSftp) {
+        await _sftpClient?.stat('.'); // SFTP İçin Ping
+        return true;
+      } else {
+        return await NativeFtpClient.noop(); // FTP/FTPS İçin Ping
+      }
+    } catch (_) {
+      return false; // Bağlantı ölü
+    }
+  }
+
   bool _isConnectionError(dynamic e) {
     String err = e.toString().toLowerCase();
-    // Native taraftan gelen genel hataların (Örn: Yetki hatası, Kota limiti) 
-    // bağlantı kopması sanılmasını önlemek için hata denetim listesi daraltıldı.
     return err.contains('socket') || err.contains('closed') || err.contains('pipe') || 
            err.contains('disconnect') || err.contains('connection') || err.contains('timeout') ||
            err.contains('handshake') || err.contains('wrong_version') || err.contains('tls') ||
@@ -858,6 +900,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         }
         _sshClient = SSHClient(socket, username: widget.profile.user, identities: identities.isNotEmpty ? identities : null, onPasswordRequest: widget.profile.password.isNotEmpty ? () => widget.profile.password : null);
         _sftpClient = await _sshClient!.sftp();
+      } else {
+        // Normal FTP/FTPS bağlanırken varsa eski bağlantıyı temizle
+        await NativeFtpClient.disconnect();
+        await NativeFtpClient.connect(widget.profile.mode, widget.profile.host, portToUse, widget.profile.user, widget.profile.password);
       }
       _goToRemotePath(remotePath);
     } catch (e) {
@@ -926,20 +972,46 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   void _createDirectory() {
-    TextEditingController ctrl = TextEditingController(); bool isLocal = _tabController.index == 0;
+    TextEditingController ctrl = TextEditingController(); 
+    bool isLocal = _tabController.index == 0;
+    
     showDialog(context: context, builder: (c) => AlertDialog(
-        title: const Text('Create dir.'), content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Folder name')),
+        title: const Text('Create Directory'), 
+        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Type name for new directory')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(onPressed: () async {
-              Navigator.pop(c); String name = ctrl.text.trim(); if (name.isEmpty) return;
-              if (isLocal) { Directory('$localPath/$name').createSync(); _loadLocal(localPath); } 
-              else {
+              Navigator.pop(c); 
+              String name = ctrl.text.trim(); 
+              if (name.isEmpty) return;
+              
+              if (isLocal) { 
+                try {
+                  Directory newDir = Directory('$localPath/$name');
+                  if (newDir.existsSync()) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to create "$name"')));
+                  } else {
+                    newDir.createSync();
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Directory "$name" created')));
+                    _loadLocal(localPath); 
+                  }
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to create "$name"')));
+                }
+              } else {
                 try {
                   if (_isSftp) await _sftpClient!.mkdir('$remotePath/$name'); 
                   else await NativeFtpClient.makeDirectory(name);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Directory "$name" created')));
                   _goToRemotePath(remotePath);
-                } catch (e) { if (_isConnectionError(e)) _showDisconnectDialog(); else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
+                } catch (e) { 
+                  if (_isConnectionError(e)) {
+                    _showDisconnectDialog(); 
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to create "$name"')));
+                  }
+                }
               }
             }, child: const Text('OK')),
         ],
@@ -971,9 +1043,22 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
   Future<void> _deleteItems(List<String> items, bool isLocal) async {
     if (items.isEmpty) return;
+    
+    String dialogText;
+    if (items.length == 1) {
+      String itemName = isLocal ? items.first.split('/').last : items.first;
+      dialogText = 'Deleting "$itemName"\nAre you sure?';
+    } else {
+      dialogText = 'Deleting selected files. (${items.length})\nAre you sure?';
+    }
+
     bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
-        title: const Text("Delete Warning"), content: Text("Are you sure you want to delete ${items.length} item(s)?\nThis action cannot be undone."),
-        actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("No")), TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Yes", style: TextStyle(color: Colors.red)))],
+        title: const Text("Delete file(s)"), 
+        content: Text(dialogText),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Cancel")), 
+          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("OK", style: TextStyle(color: Colors.red)))
+        ],
     )) ?? false;
 
     if (confirm) {
@@ -1224,7 +1309,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         } else if (_isConnectionError(e)) {
            connectionLost = true;
         } else {
-           // Sunucudan dönen gerçek hatayı kullanıcıya göster (Örn: Quota Exceeded)
            if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 content: Text(errStr, style: const TextStyle(color: Colors.white)),
@@ -1309,6 +1393,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Widget _buildLocalList() {
     if (localLoading) return const Center(child: CircularProgressIndicator());
     return ListView.separated(
+      key: const PageStorageKey<String>('local_list'),
       itemCount: localFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entity = localFiles[index]; final isDir = entity is Directory; final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
@@ -1326,6 +1411,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (remoteLoading) return const Center(child: CircularProgressIndicator());
     if (remoteError.isNotEmpty) return Center(child: Text(remoteError, style: const TextStyle(color: Colors.red)));
     return ListView.separated(
+      key: const PageStorageKey<String>('remote_list'),
       itemCount: remoteFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
         final entry = remoteFiles[index]; final isDir = entry.isDir; String sizeStr = isDir ? "" : formatBytes(entry.size);
