@@ -38,10 +38,6 @@ class MainActivity: FlutterActivity() {
                                 mode.contains("FTPS") -> FTPSClient(true)
                                 else -> FTPClient()
                             }
-
-                            // Hızlandırma ve bağlantı kopmasını engelleme (53MB+ büyük dosyalar için)
-                            ftpClient?.controlKeepAliveTimeout = 300 // 5 Dakika
-                            ftpClient?.controlKeepAliveReplyTimeout = 300
                             
                             ftpClient?.connect(host, port)
                             val success = ftpClient?.login(user, pass) ?: false
@@ -49,10 +45,6 @@ class MainActivity: FlutterActivity() {
 
                             ftpClient?.enterLocalPassiveMode()
                             ftpClient?.setFileType(FTP.BINARY_FILE_TYPE)
-                            
-                            // 1MB Buffer ile arşa çıkan hız ve modern I/O
-                            ftpClient?.bufferSize = 1024 * 1024 
-                            ftpClient?.isUseEPSVwithIPv4 = true 
 
                             if (ftpClient is FTPSClient) {
                                 (ftpClient as FTPSClient).execPBSZ(0)
@@ -68,7 +60,7 @@ class MainActivity: FlutterActivity() {
                             mainHandler.post { result.success(true) }
                         }
                         "cancel" -> {
-                            isCancelled = true // Transfer döngüsünü durdurur
+                            isCancelled = true
                             mainHandler.post { result.success(true) }
                         }
                         "list" -> {
@@ -113,33 +105,41 @@ class MainActivity: FlutterActivity() {
                             val file = File(localPath)
                             val totalSize = file.length()
                             val fis = FileInputStream(file)
-                            
-                            // Parçalı veri gönderimi (Progress Callback ve hız limitini kaldırma için)
+
                             val outputStream = ftpClient?.storeFileStream(remotePath)
-                            if (outputStream == null) throw Exception("Upload stream is null")
+                            if (outputStream == null) {
+                                fis.close()
+                                throw Exception("Stream error: ${ftpClient?.replyString}")
+                            }
                             
-                            val buffer = ByteArray(1024 * 1024) // 1MB Chunk size
+                            val buffer = ByteArray(32 * 1024) // 32 KB Güvenli Akış Tamponu
                             var bytesRead: Int
                             var uploadedSize = 0L
                             var lastReportTime = System.currentTimeMillis()
                             
-                            while (fis.read(buffer).also { bytesRead = it } != -1) {
-                                if (isCancelled) break
-                                outputStream.write(buffer, 0, bytesRead)
-                                uploadedSize += bytesRead
-                                val now = System.currentTimeMillis()
-                                if (now - lastReportTime > 500 || uploadedSize == totalSize) { // Yarım saniyede bir UI güncellemesi
-                                    mainHandler.post {
-                                        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-                                            .invokeMethod("progress", mapOf("transferred" to uploadedSize, "total" to totalSize))
+                            try {
+                                while (fis.read(buffer).also { bytesRead = it } != -1) {
+                                    if (isCancelled) throw Exception("CANCELLED")
+                                    outputStream.write(buffer, 0, bytesRead)
+                                    uploadedSize += bytesRead
+                                    
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastReportTime > 250 || uploadedSize == totalSize) {
+                                        mainHandler.post {
+                                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                                                .invokeMethod("progress", mapOf("transferred" to uploadedSize, "total" to totalSize))
+                                        }
+                                        lastReportTime = now
                                     }
-                                    lastReportTime = now
                                 }
+                            } finally {
+                                try { outputStream.close() } catch(e: Exception) {}
+                                try { fis.close() } catch(e: Exception) {}
                             }
-                            outputStream.close()
-                            fis.close()
+                            
                             val success = ftpClient?.completePendingCommand() ?: false
-                            if(!success && !isCancelled) throw Exception("Upload failed on completion")
+                            if (!success && !isCancelled) throw Exception("Upload failed: ${ftpClient?.replyString}")
+                            
                             mainHandler.post { result.success(true) }
                         }
                         "download" -> {
@@ -148,7 +148,6 @@ class MainActivity: FlutterActivity() {
                             val localPath = args?.get("localPath") as? String ?: ""
                             val file = File(localPath)
                             
-                            // Toplam boyutu öğren (Arayüzde % hesaplayabilmek için)
                             ftpClient?.sendCommand("SIZE", remotePath)
                             val reply = ftpClient?.replyString ?: ""
                             var totalSize = 0L
@@ -158,36 +157,52 @@ class MainActivity: FlutterActivity() {
 
                             val fos = FileOutputStream(file)
                             val inputStream = ftpClient?.retrieveFileStream(remotePath)
-                            if (inputStream == null) throw Exception("Download stream is null")
+                            if (inputStream == null) {
+                                fos.close()
+                                throw Exception("Stream error: ${ftpClient?.replyString}")
+                            }
                             
-                            val buffer = ByteArray(1024 * 1024) // 1MB chunk size
+                            val buffer = ByteArray(32 * 1024)
                             var bytesRead: Int
                             var downloadedSize = 0L
                             var lastReportTime = System.currentTimeMillis()
                             
-                            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                                if (isCancelled) break
-                                fos.write(buffer, 0, bytesRead)
-                                downloadedSize += bytesRead
-                                val now = System.currentTimeMillis()
-                                if (now - lastReportTime > 500 || downloadedSize == totalSize) {
-                                    mainHandler.post {
-                                        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-                                            .invokeMethod("progress", mapOf("transferred" to downloadedSize, "total" to totalSize))
+                            try {
+                                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                    if (isCancelled) throw Exception("CANCELLED")
+                                    fos.write(buffer, 0, bytesRead)
+                                    downloadedSize += bytesRead
+                                    
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastReportTime > 250 || downloadedSize == totalSize) {
+                                        mainHandler.post {
+                                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                                                .invokeMethod("progress", mapOf("transferred" to downloadedSize, "total" to totalSize))
+                                        }
+                                        lastReportTime = now
                                     }
-                                    lastReportTime = now
                                 }
+                            } finally {
+                                try { inputStream.close() } catch(e: Exception) {}
+                                try { fos.close() } catch(e: Exception) {}
                             }
-                            inputStream.close()
-                            fos.close()
+                            
                             val success = ftpClient?.completePendingCommand() ?: false
-                            if(!success && !isCancelled) throw Exception("Download failed on completion")
+                            if (!success && !isCancelled) throw Exception("Download failed: ${ftpClient?.replyString}")
+                            
                             mainHandler.post { result.success(true) }
                         }
                         else -> mainHandler.post { result.notImplemented() }
                     }
                 } catch (e: Exception) {
-                    mainHandler.post { result.error("FTP_ERR", e.message, null) }
+                    val msg = e.message ?: "Unknown error"
+                    mainHandler.post { 
+                        if (msg == "CANCELLED") {
+                            result.error("CANCELLED", msg, null)
+                        } else {
+                            result.error("FTP_ERR", msg, null)
+                        }
+                    }
                 }
             }
         }

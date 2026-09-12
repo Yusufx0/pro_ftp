@@ -125,7 +125,7 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
-// --- NATIVE FTP KÖPRÜSÜ (Apache Commons Net ile Konuşur) ---
+// --- NATIVE FTP KÖPRÜSÜ ---
 class NativeFtpClient {
   static const platform = MethodChannel('ftp_native');
   static Function(int transferred, int total)? onProgress;
@@ -729,10 +729,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
   bool _isConnectionError(dynamic e) {
     String err = e.toString().toLowerCase();
+    // Native taraftan gelen genel hataların (Örn: Yetki hatası, Kota limiti) 
+    // bağlantı kopması sanılmasını önlemek için hata denetim listesi daraltıldı.
     return err.contains('socket') || err.contains('closed') || err.contains('pipe') || 
            err.contains('disconnect') || err.contains('connection') || err.contains('timeout') ||
            err.contains('handshake') || err.contains('wrong_version') || err.contains('tls') ||
-           err.contains('reset') || err.contains('broken') || err.contains('null') || err.contains('ftp_err');
+           err.contains('reset') || err.contains('broken');
   }
 
   void _showDisconnectDialog() {
@@ -971,7 +973,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (items.isEmpty) return;
     bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
         title: const Text("Delete Warning"), content: Text("Are you sure you want to delete ${items.length} item(s)?\nThis action cannot be undone."),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("No")), TextButton(onPressed: () => Navigator.pop(c), child: const Text("Yes", style: TextStyle(color: Colors.red)))],
+        actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("No")), TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Yes", style: TextStyle(color: Colors.red)))],
     )) ?? false;
 
     if (confirm) {
@@ -1177,7 +1179,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               final remoteFile = await _sftpClient!.open('$remotePath/${file.path.split('/').last}', mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
               Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
                  await for (var chunk in source) {
-                    if (isTransferCancelled) throw Exception("Cancelled");
+                    if (isTransferCancelled) throw Exception("CANCELLED");
                     currentTransferred += chunk.length;
                     updateDialog(currentTransferred, currentTotal);
                     yield Uint8List.fromList(chunk);
@@ -1202,7 +1204,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
              final sink = localFile.openWrite();
              
              await for (var chunk in remoteFile.read()) { 
-                if (isTransferCancelled) break;
+                if (isTransferCancelled) throw Exception("CANCELLED");
                 sink.add(chunk); 
                 currentTransferred += chunk.length;
                 updateDialog(currentTransferred, currentTotal);
@@ -1216,7 +1218,21 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           }
         }
       } catch (e) {
-        if (_isConnectionError(e)) connectionLost = true;
+        String errStr = e.toString();
+        if (errStr.contains('CANCELLED')) {
+           isTransferCancelled = true;
+        } else if (_isConnectionError(e)) {
+           connectionLost = true;
+        } else {
+           // Sunucudan dönen gerçek hatayı kullanıcıya göster (Örn: Quota Exceeded)
+           if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(errStr, style: const TextStyle(color: Colors.white)),
+                backgroundColor: Colors.redAccent,
+                duration: const Duration(seconds: 4),
+              ));
+           }
+        }
       }
     }
 
@@ -1229,7 +1245,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       _showDisconnectDialog();
     } else if (isTransferCancelled) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transfer cancelled')));
-    } else {
+    } else if (successCount > 0) {
       showDialog(context: context, builder: (c) => AlertDialog(
           title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
           content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
