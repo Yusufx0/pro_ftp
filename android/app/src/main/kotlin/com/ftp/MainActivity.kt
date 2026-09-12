@@ -11,7 +11,6 @@ import org.apache.commons.net.ftp.FTPSClient
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.time.Duration
 import kotlin.concurrent.thread
 
 class MainActivity: FlutterActivity() {
@@ -39,11 +38,7 @@ class MainActivity: FlutterActivity() {
                                 else -> FTPClient()
                             }
 
-                            // Doğru Tipler: connectTimeout ve dataTimeout Duration, defaultTimeout ise Int (milisaniye) ister
-                            ftpClient?.connectTimeout = Duration.ofMillis(10000)
-                            ftpClient?.setDefaultTimeout(10000)
-                            ftpClient?.dataTimeout = Duration.ofMillis(10000)
-
+                            // Uyumsuzluk çıkaran timeout satırları kaldırıldı, standart güvenli bağlantıya geçildi
                             ftpClient?.connect(host, port)
                             val success = ftpClient?.login(user, pass) ?: false
                             if (!success) throw Exception("Invalid user name or password.")
