@@ -11,7 +11,7 @@ import 'package:dartssh2/dartssh2.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  NativeFtpClient.init(); // Progress dinleyicisi başlatılıyor
+  NativeFtpClient.init();
   runApp(const FtpProApp());
 }
 
@@ -125,11 +125,9 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
-// --- YENİ NATIVE FTP KÖPRÜSÜ (Apache Commons Net ile Konuşur) ---
+// --- NATIVE FTP KÖPRÜSÜ (Apache Commons Net ile Konuşur) ---
 class NativeFtpClient {
   static const platform = MethodChannel('ftp_native');
-  
-  // İlerleme yüzdesi için callback
   static Function(int transferred, int total)? onProgress;
 
   static void init() {
@@ -793,7 +791,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         return AlertDialog(
           title: const Text('Sort by'),
           content: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize: min(2, 2) == 2 ? MainAxisSize.min : MainAxisSize.max,
             children: ['Name', 'Size'].map((mode) {
               return RadioListTile<String>(title: Text(mode), value: mode, groupValue: _sortMethod, onChanged: (val) {
                   setState(() => _sortMethod = val!); Navigator.pop(context);
@@ -858,8 +856,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         }
         _sshClient = SSHClient(socket, username: widget.profile.user, identities: identities.isNotEmpty ? identities : null, onPasswordRequest: widget.profile.password.isNotEmpty ? () => widget.profile.password : null);
         _sftpClient = await _sshClient!.sftp();
-      } else {
-        // Native tarafta bağlandığımızı LoginScreen'de garantiledik.
       }
       _goToRemotePath(remotePath);
     } catch (e) {
@@ -975,7 +971,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (items.isEmpty) return;
     bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
         title: const Text("Delete Warning"), content: Text("Are you sure you want to delete ${items.length} item(s)?\nThis action cannot be undone."),
-        actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("No")), TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Yes", style: TextStyle(color: Colors.red)))],
+        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("No")), TextButton(onPressed: () => Navigator.pop(c), child: const Text("Yes", style: TextStyle(color: Colors.red)))],
     )) ?? false;
 
     if (confirm) {
@@ -1041,7 +1037,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     DateTime startTime = DateTime.now();
     StateSetter? dialogSetState;
 
-    // Durumu güncelleyen callback
     void updateDialog(int transferred, int total) {
       if (mounted && dialogSetState != null) {
         dialogSetState!(() {
@@ -1051,10 +1046,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     }
 
-    // Native Bridge Callback Ayarla
     NativeFtpClient.onProgress = updateDialog;
 
-    // TRANSFER STATUS EKRANI
+    // TRANSFER STATUS MODAL
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1106,7 +1100,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 children: [
                   Row(
                     children: [
-                      Icon(isLocal ? Icons.upload_file : Icons.download_file, color: isLocal ? Colors.orange : Colors.lightBlueAccent, size: 28),
+                      Icon(isLocal ? Icons.upload : Icons.download, color: isLocal ? Colors.orange : Colors.lightBlueAccent, size: 28),
                       const SizedBox(width: 10),
                       Expanded(child: Text(currentFileName, style: const TextStyle(color: Colors.white, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis)),
                     ],
@@ -1179,7 +1173,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             currentTotal = file.lengthSync();
             updateDialog(0, currentTotal);
 
-            if (_isSftp) { // SFTP Chunked Yükleme (Performanslı)
+            if (_isSftp) {
               final remoteFile = await _sftpClient!.open('$remotePath/${file.path.split('/').last}', mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
               Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
                  await for (var chunk in source) {
@@ -1192,17 +1186,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               await remoteFile.write(progressStream(file.openRead()));
               await remoteFile.close(); 
               successCount++;
-            } else { // Native FTP Upload
+            } else {
               await NativeFtpClient.upload(file.path, '$remotePath/${file.path.split('/').last}');
               if(!isTransferCancelled) successCount++;
             }
           }
-        } else { // İndirme (Download)
-          if (_isSftp) { // SFTP Chunked İndirme
-             final remoteFile = await _sftpClient!.open('$remotePath/$item'); 
-             currentTotal = remoteFile.attr.size ?? 0;
+        } else {
+          if (_isSftp) {
+             final fileStat = await _sftpClient!.stat('$remotePath/$item');
+             currentTotal = fileStat.size ?? 0;
              updateDialog(0, currentTotal);
-             
+
+             final remoteFile = await _sftpClient!.open('$remotePath/$item'); 
              final localFile = File('$localPath/$item'); 
              final sink = localFile.openWrite();
              
@@ -1213,8 +1208,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 updateDialog(currentTransferred, currentTotal);
              } 
              await sink.close(); 
+             await remoteFile.close();
              if (!isTransferCancelled) successCount++;
-          } else { // Native FTP Download
+          } else {
              await NativeFtpClient.download(item, '$localPath/$item'); 
              if(!isTransferCancelled) successCount++; 
           }
@@ -1224,7 +1220,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     }
 
-    if (mounted) Navigator.pop(context); // Diyaloğu kapat
+    if (mounted) Navigator.pop(context);
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
