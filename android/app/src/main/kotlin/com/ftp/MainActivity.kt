@@ -11,6 +11,7 @@ import org.apache.commons.net.ftp.FTPSClient
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.time.Duration
 import kotlin.concurrent.thread
 
 class MainActivity: FlutterActivity() {
@@ -38,10 +39,10 @@ class MainActivity: FlutterActivity() {
                                 else -> FTPClient()
                             }
 
-                            // 10 saniye Timeout Zırhı
-                            ftpClient?.connectTimeout = 10000
+                            // Kotlin Duration Hatasını Engelleyen Doğru Zaman Ayarları
+                            ftpClient?.connectTimeout = Duration.ofMillis(10000)
                             ftpClient?.defaultTimeout = 10000
-                            ftpClient?.dataTimeout = 10000
+                            ftpClient?.dataTimeout = Duration.ofMillis(10000)
 
                             ftpClient?.connect(host, port)
                             val success = ftpClient?.login(user, pass) ?: false
