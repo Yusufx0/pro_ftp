@@ -158,7 +158,10 @@ class NativeFtpClient {
   }
 
   static Future<void> disconnect() async {
-    await platform.invokeMethod('disconnect');
+    try {
+      // Ölü bağlantı koparılırken çökme engellendi
+      await platform.invokeMethod('disconnect');
+    } catch (_) {}
   }
 
   static Future<void> cancel() async {
@@ -909,9 +912,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       _goToRemotePath(remotePath, silent: silent);
     } catch (e) {
-      if (!silent && _isConnectionError(e)) _showDisconnectDialog();
-      if (mounted) {
-        setState(() { remoteLoading = false; remoteError = e.toString(); });
+      if (silent) {
+        // Sessiz yeniden bağlanma esnasında da hata alınırsa bu, internetin gerçekten gittiğini gösterir. Kırmızı yazı basılmaz.
+        _showDisconnectDialog();
+        if (mounted) setState(() { remoteLoading = false; remoteError = ''; });
+      } else {
+        if (_isConnectionError(e)) _showDisconnectDialog();
+        if (mounted) setState(() { remoteLoading = false; remoteError = e.toString(); });
       }
     }
   }
@@ -956,9 +963,15 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         setState(() { remoteFiles = resultList; remoteLoading = false; _selectedRemoteNames.clear(); });
       }
     } catch (e) {
-      if (!silent && _isConnectionError(e)) _showDisconnectDialog(); 
-      if (mounted && remotePath == fetchPath) {
-        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+      if (_isConnectionError(e)) {
+        if (!silent) _showDisconnectDialog();
+        if (mounted && remotePath == fetchPath) {
+          setState(() { remoteLoading = false; remoteError = ''; });
+        }
+      } else {
+        if (mounted && remotePath == fetchPath) {
+          setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
+        }
       }
     } finally { _isNetworkBusy = false; }
   }
@@ -1141,6 +1154,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     NativeFtpClient.onProgress = updateDialog;
 
+    // TRANSFER STATUS MODAL
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1398,7 +1412,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Widget _buildLocalList() {
     if (localLoading) return const Center(child: CircularProgressIndicator());
     return ListView.separated(
-      // Kaydırma (Scroll) pozisyonunu HER BİR KLASÖR DİZİNİ için ayrı hatırlar
       key: PageStorageKey<String>('local_list_$localPath'),
       itemCount: localFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
@@ -1417,7 +1430,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (remoteLoading) return const Center(child: CircularProgressIndicator());
     if (remoteError.isNotEmpty) return Center(child: Text(remoteError, style: const TextStyle(color: Colors.red)));
     return ListView.separated(
-      // Kaydırma (Scroll) pozisyonunu HER BİR KLASÖR DİZİNİ için ayrı hatırlar
       key: PageStorageKey<String>('remote_list_$remotePath'),
       itemCount: remoteFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {

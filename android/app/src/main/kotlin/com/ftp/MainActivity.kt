@@ -58,14 +58,18 @@ class MainActivity: FlutterActivity() {
                         }
                         "noop" -> {
                             // Arka planda sunucu bağlantısını canlı tutmak için (Ping)
-                            val success = ftpClient?.sendNoOp() ?: false
+                            // Ölü bağlantıda Broken pipe hatası verirse yutulur
+                            val success = try { ftpClient?.sendNoOp() ?: false } catch (e: Exception) { false }
                             mainHandler.post { result.success(success) }
                         }
                         "disconnect" -> {
-                            if (ftpClient?.isConnected == true) {
-                                ftpClient?.logout()
-                                ftpClient?.disconnect()
-                            }
+                            // Eski ölü bağlantıyı kapatırken hata verirse (Broken pipe vs.) sistemi çökertmemesi için yutulur
+                            try {
+                                if (ftpClient?.isConnected == true) {
+                                    try { ftpClient?.logout() } catch (e: Exception) {}
+                                    try { ftpClient?.disconnect() } catch (e: Exception) {}
+                                }
+                            } catch (e: Exception) {}
                             mainHandler.post { result.success(true) }
                         }
                         "cancel" -> {
