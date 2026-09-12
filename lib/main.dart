@@ -685,7 +685,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   String remoteError = '';
   final Set<String> _selectedRemoteNames = {};
   
-  final Map<String, List<RemoteEntry>> _remoteDirectoryCache = {};
   bool _isNetworkBusy = false;
   int _currentNetworkRequestId = 0;
   bool _isDisconnectDialogShowing = false;
@@ -779,7 +778,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             children: ['Name', 'Size'].map((mode) {
               return RadioListTile<String>(title: Text(mode), value: mode, groupValue: _sortMethod, onChanged: (val) {
                   setState(() => _sortMethod = val!); Navigator.pop(context);
-                  if (_tabController.index == 0) _loadLocal(localPath); else { _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath); }
+                  if (_tabController.index == 0) _loadLocal(localPath); else { _goToRemotePath(remotePath); }
               });
             }).toList(),
           ),
@@ -851,16 +850,16 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   void _goToRemotePath(String targetPath) {
-    bool hasCache = _remoteDirectoryCache.containsKey(targetPath);
     setState(() {
       remotePath = targetPath;
-      if (hasCache) { remoteFiles = _remoteDirectoryCache[targetPath]!; remoteLoading = false; remoteError = ''; } 
-      else { remoteFiles = []; remoteLoading = true; remoteError = ''; }
+      remoteFiles = []; 
+      remoteLoading = true; 
+      remoteError = '';
     });
-    _fetchRemoteDataSilently(targetPath, hasCache: hasCache);
+    _fetchRemoteData(targetPath);
   }
 
-  Future<void> _fetchRemoteDataSilently(String fetchPath, {required bool hasCache}) async {
+  Future<void> _fetchRemoteData(String fetchPath) async {
     int myRequestId = ++_currentNetworkRequestId;
     while (_isNetworkBusy) { await Future.delayed(const Duration(milliseconds: 10)); if (myRequestId != _currentNetworkRequestId) return; }
     _isNetworkBusy = true;
@@ -885,16 +884,14 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       
       _sortRemoteFiles(folders, files);
       final resultList = [...folders, ...files];
-      _remoteDirectoryCache[fetchPath] = resultList;
 
       if (mounted && remotePath == fetchPath) {
-        setState(() { remoteFiles = resultList; remoteLoading = false; if (!hasCache) _selectedRemoteNames.clear(); });
+        setState(() { remoteFiles = resultList; remoteLoading = false; _selectedRemoteNames.clear(); });
       }
     } catch (e) {
       if (_isConnectionError(e)) _showDisconnectDialog(); 
       if (mounted && remotePath == fetchPath) {
-        if (!hasCache) setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
-        else { setState(() { remoteLoading = false; }); if (!_isDisconnectDialogShowing) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync error: $e'))); }
+        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
       }
     } finally { _isNetworkBusy = false; }
   }
@@ -924,7 +921,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 try {
                   if (_isSftp) await _sftpClient!.mkdir('$remotePath/$name'); 
                   else await NativeFtpClient.makeDirectory(name);
-                  _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath);
+                  _goToRemotePath(remotePath);
                 } catch (e) { if (_isConnectionError(e)) _showDisconnectDialog(); else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
               }
             }, child: const Text('OK')),
@@ -946,7 +943,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 try {
                   if (_isSftp) await _sftpClient!.rename('$remotePath/$oldName', '$remotePath/$newName'); 
                   else await NativeFtpClient.rename(oldName, newName);
-                  _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath);
+                  _goToRemotePath(remotePath);
                 } catch (e) { if (_isConnectionError(e)) _showDisconnectDialog(); else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
               }
             }, child: const Text('OK')),
@@ -976,7 +973,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           } catch (e) { if (_isConnectionError(e)) connectionLost = true; }
         }
         if (connectionLost) _showDisconnectDialog();
-        _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath);
+        _goToRemotePath(remotePath);
       }
     }
   }
@@ -1036,7 +1033,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       } catch (e) { if (_isConnectionError(e)) connectionLost = true; }
     }
 
-    if (isLocal) { _selectedLocalPaths.clear(); _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath); } 
+    if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
     if (mounted) Navigator.pop(context); 
     
@@ -1082,7 +1079,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 else if (value == 'Delete') _deleteItems(isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList(), isLocal);
                 else if (value == 'CreateDir') _createDirectory();
                 else if (value == 'Sort') _showSortDialog();
-                else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _remoteDirectoryCache.remove(remotePath); _goToRemotePath(remotePath); } }
+                else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _goToRemotePath(remotePath); } }
                 else if (value == 'SelectAll') { setState(() { if (isLocal) { if (_selectedLocalPaths.length == localFiles.length) _selectedLocalPaths.clear(); else _selectedLocalPaths.addAll(localFiles.map((e) => e.path)); } else { if (_selectedRemoteNames.length == remoteFiles.length) _selectedRemoteNames.clear(); else _selectedRemoteNames.addAll(remoteFiles.map((e) => e.name)); } }); }
                 else if (value == 'FilterSelect') _handleFilterSelect(isLocal);
                 else if (value == 'Logout') { if(!_isSftp) NativeFtpClient.disconnect(); _sshClient?.close(); Navigator.pop(context); }
