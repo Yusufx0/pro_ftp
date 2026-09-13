@@ -46,6 +46,7 @@ class FtpProApp extends StatelessWidget {
   }
 }
 
+
 // --- VERİ MODELİ ---
 class FtpProfile {
   String name;
