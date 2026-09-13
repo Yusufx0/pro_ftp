@@ -21,7 +21,7 @@ class FtpProApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Ftp Master',
+      title: 'Ftp Core',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -1461,4 +1461,3 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 }
-
