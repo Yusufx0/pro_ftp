@@ -46,7 +46,6 @@ class FtpProApp extends StatelessWidget {
   }
 }
 
-
 // --- VERİ MODELİ ---
 class FtpProfile {
   String name;
@@ -384,7 +383,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           dropdownColor: const Color(0xFF2A2E35),
                           underline: Container(height: 1, color: Colors.grey),
                           items: profiles.isEmpty 
-                              ? [const DropdownMenuItem<FtpProfile>(value: null, child: Text('No Profile Found', style: TextStyle(color: Colors.grey)))]
+                              ? [const DropdownMenuItem<FtpProfile>(value: null, child: Text('', style: TextStyle(color: Colors.grey)))]
                               : profiles.map((p) => DropdownMenuItem(value: p, child: Text(p.name))).toList(),
                           onChanged: profiles.isEmpty ? null : (val) { if (val != null) setState(() => selectedProfile = val); },
                         ),
@@ -488,7 +487,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       try {
         final dir = Directory(path);
         if (dir.existsSync()) {
-          dirs = dir.listSync().whereType<Directory>().toList();
+          dirs = dir.listSync().where((e) => FileSystemEntity.isDirectorySync(e.path)).toList();
           dirs.sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
           currentPath = path;
         }
@@ -501,7 +500,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           if (dirs.isEmpty && Directory(currentPath).existsSync()) {
-             try { dirs = Directory(currentPath).listSync().whereType<Directory>().toList()..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase())); } catch(_) {}
+             try { dirs = Directory(currentPath).listSync().where((e) => FileSystemEntity.isDirectorySync(e.path)).toList()..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase())); } catch(_) {}
           }
           return AlertDialog(
             title: Text('Local path:\n$currentPath', style: const TextStyle(fontSize: 14, color: Colors.blueAccent)),
@@ -550,8 +549,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         final dir = Directory(path);
         if (dir.existsSync()) {
           entities = dir.listSync()..sort((a, b) {
-            bool aIsDir = a is Directory;
-            bool bIsDir = b is Directory;
+            bool aIsDir = FileSystemEntity.isDirectorySync(a.path);
+            bool bIsDir = FileSystemEntity.isDirectorySync(b.path);
             if (aIsDir && !bIsDir) return -1;
             if (!aIsDir && bIsDir) return 1;
             return a.path.toLowerCase().compareTo(b.path.toLowerCase());
@@ -581,10 +580,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       itemCount: entities.length,
                       itemBuilder: (context, index) {
                         final entity = entities[index];
-                        final isDir = entity is Directory;
+                        // FileSystemEntity.isDirectorySync ile kesin olarak klasör tespiti
+                        final isDir = FileSystemEntity.isDirectorySync(entity.path);
                         return ListTile(
                           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: Colors.blueAccent), title: Text(entity.path.split('/').last),
-                          trailing: isDir ? null : Checkbox(activeColor: Colors.blueAccent, value: selectedFile == entity.path, onChanged: (val) => setDialogState(() => selectedFile = entity.path)),
+                          trailing: isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: selectedFile == entity.path, onChanged: (val) => setDialogState(() => selectedFile = entity.path)),
                           onTap: () { if (isDir) loadEntities(entity.path, setDialogState); else setDialogState(() => selectedFile = entity.path); },
                         );
                       },
@@ -887,7 +887,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       if (dir.existsSync()) {
         final entities = dir.listSync(recursive: false);
         List<FileSystemEntity> folders = []; List<FileSystemEntity> files = [];
-        for (var e in entities) { if (e is Directory) folders.add(e); else files.add(e); }
+        for (var e in entities) { if (FileSystemEntity.isDirectorySync(e.path)) folders.add(e); else files.add(e); }
         _sortLocalFiles(folders, files);
         setState(() { localFiles = [...folders, ...files]; localPath = path; _selectedLocalPaths.clear(); localLoading = false; });
       } else setState(() => localLoading = false);
@@ -1432,7 +1432,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       key: PageStorageKey<String>('local_list_$localPath'),
       itemCount: localFiles.length, separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
       itemBuilder: (context, index) {
-        final entity = localFiles[index]; final isDir = entity is Directory; final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
+        final entity = localFiles[index]; final isDir = FileSystemEntity.isDirectorySync(entity.path); final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(name),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
