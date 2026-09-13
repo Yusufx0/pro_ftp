@@ -39,7 +39,7 @@ jobs:
         STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
       run: |
         # Base64 metnini tekrar dosyaya çeviriyoruz
-        echo $KEYSTORE_BASE64 | base64 --decode > android/app/upload_keystore.jks
+        echo "$KEYSTORE_BASE64" | base64 --decode --ignore-garbage > android/app/upload_keystore.jks
         
         # key.properties dosyasını sunucuda anlık olarak yaratıyoruz
         echo "storePassword=$STORE_PASSWORD" > android/app/key.properties
