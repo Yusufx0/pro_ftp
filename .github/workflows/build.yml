@@ -14,7 +14,7 @@ jobs:
     - name: Kodu Kopyala
       uses: actions/checkout@v3
 
-    - name: Java 17 Kurulumu (Derleme için gerekli)
+    - name: Java 17 Kurulumu
       uses: actions/setup-java@v3
       with:
         distribution: 'zulu'
@@ -31,14 +31,30 @@ jobs:
     - name: Generate App Icons
       run: flutter pub run flutter_launcher_icons
 
-   # - name: Release AAB Derle (Keystore burada devreye girer)
-     # run: flutter build appbundle --release
+    - name: Keystore ve key.properties Dosyalarını GitHub Secrets'tan Oluştur
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+      run: |
+        # Base64 metnini tekrar dosyaya çeviriyoruz
+        echo $KEYSTORE_BASE64 | base64 --decode > android/app/upload_keystore.jks
+        
+        # key.properties dosyasını sunucuda anlık olarak yaratıyoruz
+        echo "storePassword=$STORE_PASSWORD" > android/app/key.properties
+        echo "keyPassword=$KEY_PASSWORD" >> android/app/key.properties
+        echo "keyAlias=$KEY_ALIAS" >> android/app/key.properties
+        echo "storeFile=upload_keystore.jks" >> android/app/key.properties
 
-   # - name: AAB'yi Yükle
-   #   uses: actions/upload-artifact@v4
-   #   with:
-     #   name: FTP-PRO-AAB-RELEASE
-     #   path: build/app/outputs/bundle/release/app-release.aab
+    - name: Release AAB Derle
+      run: flutter build appbundle --release
+
+    - name: AAB'yi Yükle
+      uses: actions/upload-artifact@v4
+      with:
+        name: FTP-PRO-AAB-RELEASE
+        path: build/app/outputs/bundle/release/app-release.aab
 
     - name: Release APK Derle
       run: flutter build apk --release

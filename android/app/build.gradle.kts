@@ -4,20 +4,20 @@ import java.util.Properties
 // 1. İMZA YAPILANDIRMASI İÇİN PROPERTIES DOSYASINI OKUMA BÖLÜMÜ
 val keystoreProperties = Properties()
 val keystorePropertiesFile = file("key.properties")
+
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 } else {
-    println("Uyarı: keystore.properties dosyası bulunamadı!")
+    println("Uyarı: key.properties dosyası bulunamadı! Eğer release (sürüm) alıyorsanız GitHub Actions üzerinden ayarlanacaktır.")
 }
 
 plugins {
     id("com.android.application")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
-    namespace = "com.ftp"
+    namespace = "dev.corebyte.ftpcore"
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.ftp"
+        applicationId = "dev.corebyte.ftpcore"
         minSdk = flutter.minSdkVersion
         targetSdk = 37
         versionCode = flutter.versionCode
@@ -37,16 +37,19 @@ android {
     // 2. İMZA YAPILANDIRMASI OLUŞTURMA BÖLÜMÜ
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties.getProperty("keyAlias")
-            keyPassword = keystoreProperties.getProperty("keyPassword")
-            storeFile = file(keystoreProperties.getProperty("storeFile"))
-            storePassword = keystoreProperties.getProperty("storePassword")
+            // Sadece dosya varsa imza bilgilerini ata, yoksa hata verme
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
         }
     }
 
     buildTypes {
         release {
-            // 3. OLUŞTURULAN İMZAYI RELEASE (SÜRÜM) İÇİN KULLANMA
+            // 3. OLUŞTURULAN İMZAYI RELEASE İÇİN KULLANMA
             signingConfig = signingConfigs.getByName("release")
         }
     }
