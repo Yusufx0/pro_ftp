@@ -361,7 +361,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Row(children: [Icon(Icons.public, color: Colors.blueAccent), SizedBox(width: 8), Text('Ftp Master')]),
+        title: const Row(children: [Icon(Icons.public, color: Colors.blueAccent), SizedBox(width: 8), Text('Ftp Core')]),
         actions: [IconButton(icon: const Icon(Icons.more_vert), onPressed: () {})],
       ),
       body: SafeArea(
