@@ -1461,3 +1461,4 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 }
+
