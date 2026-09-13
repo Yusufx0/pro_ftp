@@ -64,3 +64,12 @@ jobs:
       with:
         name: FTP-PRO-APK-RELEASE
         path: build/app/outputs/flutter-apk/app-release.apk
+
+    - name: Debug APK Derle
+      run: flutter build apk --debug
+
+    - name: Debug APK'yi Yükle
+      uses: actions/upload-artifact@v4
+      with:
+        name: FTP-PRO-APK-DEBUG
+        path: build/app/outputs/flutter-apk/app-debug.apk
