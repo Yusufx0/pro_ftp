@@ -31,20 +31,20 @@ jobs:
     - name: Generate App Icons
       run: flutter pub run flutter_launcher_icons
 
-    - name: Release AAB Derle (Keystore burada devreye girer)
-      run: flutter build appbundle --release
+   # - name: Release AAB Derle (Keystore burada devreye girer)
+     # run: flutter build appbundle --release
 
-    - name: AAB'yi Yükle
+   # - name: AAB'yi Yükle
+   #   uses: actions/upload-artifact@v4
+   #   with:
+     #   name: FTP-PRO-AAB-RELEASE
+     #   path: build/app/outputs/bundle/release/app-release.aab
+
+    - name: Release APK Derle
+      run: flutter build apk --release
+
+    - name: APK'yi Yükle
       uses: actions/upload-artifact@v4
       with:
-        name: FTP-PRO-AAB-RELEASE
-        path: build/app/outputs/bundle/release/app-release.aab
-
-  #  - name: Release APK Derle
-   #   run: flutter build apk --release
-
-   # - name: APK'yi Yükle
-  #    uses: actions/upload-artifact@v4
-   #   with:
-     #   name: FTP-PRO-APK-RELEASE
-    #    path: build/app/outputs/flutter-apk/app-release.apk
+        name: FTP-PRO-APK-RELEASE
+        path: build/app/outputs/flutter-apk/app-release.apk
