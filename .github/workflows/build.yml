@@ -1,7 +1,9 @@
-name: Build APK
+name: Build Flutter App
 
 on:
   push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
 
 jobs:
@@ -9,40 +11,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Kodu Kopyala
-        uses: actions/checkout@v3
+    - name: Kodu Kopyala
+      uses: actions/checkout@v3
 
-      - name: Java 17 Kurulumu (Derleme için gerekli)
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'zulu'
-          java-version: '17'
+    - name: Java 17 Kurulumu (Derleme için gerekli)
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'zulu'
+        java-version: '17'
 
-      - name: Flutter Kur
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
+    - name: Flutter Kur
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
 
-      - name: Paketleri İndir
-        run: flutter pub get
+    - name: Paketleri İndir
+      run: flutter pub get
 
-      - name: Generate App Icons
-        run: flutter pub run flutter_launcher_icons
+    - name: Generate App Icons
+      run: flutter pub run flutter_launcher_icons
 
-      - name: Release AAB Derle (Keystore burada devreye girer)
-        run: flutter build appbundle --release
+    - name: Release AAB Derle (Keystore burada devreye girer)
+      run: flutter build appbundle --release
 
-      - name: AAB'yi Yükle
-        uses: actions/upload-artifact@v4
-        with:
-          name: FTP-PRO-AAB-RELEASE
-          path: build/app/outputs/bundle/release/app-release.aab
- 
-      #- name: Release APK Derle
-     #   run: flutter build apk --release
+    - name: AAB'yi Yükle
+      uses: actions/upload-artifact@v4
+      with:
+        name: FTP-PRO-AAB-RELEASE
+        path: build/app/outputs/bundle/release/app-release.aab
 
-     # - name: APK'yi Yukleapa
-    #    uses: actions/upload-artifact@v4
-      #  with:
-      #   name: FTP-PRO-APK-RELEASE
-       #  path: build/app/outputs/flutter-apk/app-release.apk
+  #  - name: Release APK Derle
+   #   run: flutter build apk --release
+
+   # - name: APK'yi Yükle
+  #    uses: actions/upload-artifact@v4
+   #   with:
+     #   name: FTP-PRO-APK-RELEASE
+    #    path: build/app/outputs/flutter-apk/app-release.apk
