@@ -36,6 +36,8 @@ class FtpProApp extends StatelessWidget {
             backgroundColor: const Color(0xFF2A2E35),
             foregroundColor: Colors.white,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            disabledBackgroundColor: const Color(0xFF1E2229),
+            disabledForegroundColor: Colors.grey,
           ),
         ),
       ),
@@ -159,7 +161,6 @@ class NativeFtpClient {
 
   static Future<void> disconnect() async {
     try {
-      // Ölü bağlantı koparılırken çökme engellendi
       await platform.invokeMethod('disconnect');
     } catch (_) {}
   }
@@ -228,15 +229,17 @@ class _LoginScreenState extends State<LoginScreen> {
       final List<dynamic> decoded = json.decode(profilesJson);
       setState(() {
         profiles = decoded.map((e) => FtpProfile.fromJson(e)).toList();
-        if (profiles.isNotEmpty) selectedProfile = profiles.first;
+        if (profiles.isNotEmpty) {
+          selectedProfile = profiles.first;
+        } else {
+          selectedProfile = null;
+        }
       });
     } else {
-      final defaultProfile = FtpProfile(name: 'DefaultProfile');
       setState(() {
-        profiles = [defaultProfile];
-        selectedProfile = defaultProfile;
+        profiles = [];
+        selectedProfile = null;
       });
-      _saveProfiles();
     }
   }
 
@@ -266,10 +269,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _deleteSelectedProfile() async {
-    if (profiles.length <= 1) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('At least one profile must remain.')));
-      return;
-    }
     bool confirm = await showDialog(
       context: context,
       builder: (c) => AlertDialog(
@@ -285,7 +284,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (confirm) {
       setState(() {
         profiles.remove(selectedProfile);
-        selectedProfile = profiles.first;
+        selectedProfile = profiles.isNotEmpty ? profiles.first : null;
       });
       _saveProfiles();
     }
@@ -383,8 +382,10 @@ class _LoginScreenState extends State<LoginScreen> {
                           isExpanded: true,
                           dropdownColor: const Color(0xFF2A2E35),
                           underline: Container(height: 1, color: Colors.grey),
-                          items: profiles.map((p) => DropdownMenuItem(value: p, child: Text(p.name))).toList(),
-                          onChanged: (val) { if (val != null) setState(() => selectedProfile = val); },
+                          items: profiles.isEmpty 
+                              ? [const DropdownMenuItem<FtpProfile>(value: null, child: Text('No Profile Found', style: TextStyle(color: Colors.grey)))]
+                              : profiles.map((p) => DropdownMenuItem(value: p, child: Text(p.name))).toList(),
+                          onChanged: profiles.isEmpty ? null : (val) { if (val != null) setState(() => selectedProfile = val); },
                         ),
                       ),
                     ],
@@ -393,7 +394,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   SizedBox(
                     width: double.infinity, height: 45,
                     child: ElevatedButton(
-                      onPressed: _isConnecting ? null : _connect,
+                      onPressed: (_isConnecting || selectedProfile == null) ? null : _connect,
                       child: _isConnecting 
                           ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Text('Connect', style: TextStyle(fontSize: 16)),
@@ -403,9 +404,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Expanded(child: ElevatedButton(onPressed: _deleteSelectedProfile, child: const Text('Delete'))),
+                      Expanded(child: ElevatedButton(onPressed: selectedProfile == null ? null : _deleteSelectedProfile, child: const Text('Delete'))),
                       const SizedBox(width: 8),
-                      Expanded(child: ElevatedButton(onPressed: () => _openEditor(profileToEdit: selectedProfile), child: const Text('Edit'))),
+                      Expanded(child: ElevatedButton(onPressed: selectedProfile == null ? null : () => _openEditor(profileToEdit: selectedProfile), child: const Text('Edit'))),
                       const SizedBox(width: 8),
                       Expanded(child: ElevatedButton(onPressed: () => _openEditor(), child: const Text('New'))),
                     ],
@@ -548,8 +549,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         final dir = Directory(path);
         if (dir.existsSync()) {
           entities = dir.listSync()..sort((a, b) {
-            bool aIsDir = FileSystemEntity.isDirectorySync(a.path), bIsDir = FileSystemEntity.isDirectorySync(b.path);
-            if (aIsDir && !bIsDir) return -1; if (!aIsDir && bIsDir) return 1;
+            bool aIsDir = a is Directory;
+            bool bIsDir = b is Directory;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
             return a.path.toLowerCase().compareTo(b.path.toLowerCase());
           });
           currentPath = path;
@@ -577,7 +580,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       itemCount: entities.length,
                       itemBuilder: (context, index) {
                         final entity = entities[index];
-                        final isDir = FileSystemEntity.isDirectorySync(entity.path);
+                        final isDir = entity is Directory;
                         return ListTile(
                           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: Colors.blueAccent), title: Text(entity.path.split('/').last),
                           trailing: isDir ? null : Checkbox(activeColor: Colors.blueAccent, value: selectedFile == entity.path, onChanged: (val) => setDialogState(() => selectedFile = entity.path)),
@@ -963,15 +966,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         setState(() { remoteFiles = resultList; remoteLoading = false; _selectedRemoteNames.clear(); });
       }
     } catch (e) {
-      if (_isConnectionError(e)) {
-        if (!silent) _showDisconnectDialog();
-        if (mounted && remotePath == fetchPath) {
-          setState(() { remoteLoading = false; remoteError = ''; });
-        }
-      } else {
-        if (mounted && remotePath == fetchPath) {
-          setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
-        }
+      if (!silent && _isConnectionError(e)) _showDisconnectDialog(); 
+      if (mounted && remotePath == fetchPath) {
+        setState(() { remoteLoading = false; remoteError = 'Error: $e'; });
       }
     } finally { _isNetworkBusy = false; }
   }
@@ -1039,20 +1036,39 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   void _renameItem(String oldName, bool isLocal) {
-    TextEditingController ctrl = TextEditingController(text: isLocal ? oldName.split('/').last : oldName);
+    String baseOldName = isLocal ? oldName.split('/').last : oldName;
+    TextEditingController ctrl = TextEditingController(text: baseOldName);
     showDialog(context: context, builder: (c) => AlertDialog(
         title: const Text('Rename'), content: TextField(controller: ctrl),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
           TextButton(onPressed: () async {
-              Navigator.pop(c); String newName = ctrl.text.trim(); if (newName.isEmpty || newName == (isLocal ? oldName.split('/').last : oldName)) return;
-              if (isLocal) { File(oldName).renameSync('$localPath/$newName'); _loadLocal(localPath); } 
-              else {
+              Navigator.pop(c); 
+              String newName = ctrl.text.trim(); 
+              if (newName.isEmpty || newName == baseOldName) return;
+              
+              if (isLocal) { 
+                try {
+                  if (FileSystemEntity.isDirectorySync(oldName)) {
+                    Directory(oldName).renameSync('$localPath/$newName');
+                  } else {
+                    File(oldName).renameSync('$localPath/$newName');
+                  }
+                  _loadLocal(localPath); 
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$newName" renamed successfully')));
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                }
+              } else {
                 try {
                   if (_isSftp) await _sftpClient!.rename('$remotePath/$oldName', '$remotePath/$newName'); 
                   else await NativeFtpClient.rename(oldName, newName);
                   _goToRemotePath(remotePath);
-                } catch (e) { if (_isConnectionError(e)) _showDisconnectDialog(); else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$newName" renamed successfully')));
+                } catch (e) { 
+                  if (_isConnectionError(e)) _showDisconnectDialog(); 
+                  else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); 
+                }
               }
             }, child: const Text('OK')),
         ],
@@ -1418,7 +1434,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entity = localFiles[index]; final isDir = entity is Directory; final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
           onTap: () { if (isDir) _loadLocal(entity.path); else { setState(() { if (_selectedLocalPaths.contains(entity.path)) _selectedLocalPaths.remove(entity.path); else _selectedLocalPaths.add(entity.path); }); } },
           onLongPress: () { _showContextMenu(entity.path, sizeStr, true, isDir); },
         );
@@ -1436,7 +1452,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entry = remoteFiles[index]; final isDir = entry.isDir; String sizeStr = isDir ? "" : formatBytes(entry.size);
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(entry.name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
           onTap: () { if (isDir) _changeRemoteDirectory(entry.name); else { setState(() { if (_selectedRemoteNames.contains(entry.name)) _selectedRemoteNames.remove(entry.name); else _selectedRemoteNames.add(entry.name); }); } },
           onLongPress: () { _showContextMenu(entry.name, sizeStr, false, isDir); },
         );
