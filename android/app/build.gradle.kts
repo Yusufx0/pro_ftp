@@ -66,5 +66,6 @@ flutter {
 }
 
 dependencies {
-    implementation("commons-net:commons-net:3.9.0")
+    implementation("commons-net:commons-net:3.10.0") 
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") 
 }
