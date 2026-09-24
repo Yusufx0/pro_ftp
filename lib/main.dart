@@ -8,9 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart'; // ADMOB PAKETİ EKLENDİ
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  MobileAds.instance.initialize(); // ADMOB SİSTEMİ BAŞLATILDI
   NativeFtpClient.init();
   runApp(const FtpProApp());
 }
@@ -726,6 +728,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
 
+  // --- ADMOB DEĞİŞKENLERİ EKLENDİ ---
+  BannerAd? _bannerAd;
+  bool _isBannerAdLoaded = false;
+  // GOOGLE TEST BANNER ID (Yayına çıkarken kendi reklam birimi kimliğin ile değiştir)
+  final String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; 
+
   @override
   void initState() {
     super.initState();
@@ -740,6 +748,28 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
+    
+    // ADMOB REKLAM YÜKLEME FONKSİYONU ÇAĞRILDI
+    _loadAd(); 
+  }
+
+  // --- ADMOB REKLAM YÜKLEME METODU EKLENDİ ---
+  void _loadAd() {
+    _bannerAd = BannerAd(
+      adUnitId: _adUnitId,
+      request: const AdRequest(),
+      size: AdSize.banner,
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (mounted) {
+            setState(() { _isBannerAdLoaded = true; });
+          }
+        },
+        onAdFailedToLoad: (ad, err) {
+          ad.dispose();
+        },
+      ),
+    )..load();
   }
 
   @override
@@ -749,6 +779,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _sshClient?.close();
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
+    
+    // ADMOB REKLAMI BELLEKTEN TEMİZLENDİ
+    _bannerAd?.dispose(); 
+    
     super.dispose();
   }
 
@@ -1455,9 +1489,23 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             tabs: const [Tab(icon: Icon(Icons.home), text: 'LOCAL'), Tab(icon: Icon(Icons.public), text: 'REMOTE')]
           ),
         ),
+        
+        // --- REKLAMIN EKRANA YERLEŞTİRİLDİĞİ KISIM ---
         body: Column(
           children: [
+            // EĞER REKLAM YÜKLENDİYSE EN ÜSTTE GÖSTERİLECEK
+            if (_isBannerAdLoaded && _bannerAd != null)
+              Container(
+                color: Colors.black, // Arkaplanla uyumlu olması için
+                width: _bannerAd!.size.width.toDouble(),
+                height: _bannerAd!.size.height.toDouble(),
+                child: AdWidget(ad: _bannerAd!),
+              ),
+              
+            // MEVCUT KONTROL ÇUBUĞUN
             Container(color: const Color(0xFF1E2229), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: Row(children: [IconButton(icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent), onPressed: () { if (isLocal) { if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') _loadLocal(Directory(localPath).parent.path); } else _changeRemoteDirectory('..'); }), const Text("Up", style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), ElevatedButton(onPressed: (isLocal ? _selectedLocalPaths.isEmpty : _selectedRemoteNames.isEmpty) ? null : _transferSelectedItems, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B)), child: Text(isLocal ? 'Upload' : 'Download'))])),
+            
+            // MEVCUT DOSYA LİSTELERİ
             Expanded(
               child: TabBarView(
                 controller: _tabController, 
@@ -1507,4 +1555,3 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 }
-
