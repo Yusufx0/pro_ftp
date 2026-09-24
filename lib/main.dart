@@ -144,9 +144,10 @@ class NativeFtpClient {
     });
   }
 
-  static Future<void> connect(String mode, String host, int port, String user, String pass) async {
+  static Future<void> connect(String mode, String host, int port, String user, String pass, {bool passive = true, bool binary = true}) async {
     await platform.invokeMethod('connect', {
-      'mode': mode, 'host': host, 'port': port, 'user': user, 'pass': pass
+      'mode': mode, 'host': host, 'port': port, 'user': user, 'pass': pass,
+      'passive': passive, 'binary': binary
     });
   }
   
@@ -182,16 +183,16 @@ class NativeFtpClient {
     await platform.invokeMethod('cd', {'path': path});
   }
 
-  static Future<void> makeDirectory(String name) async {
-    await platform.invokeMethod('mkdir', {'name': name});
+  static Future<void> makeDirectory(String path) async {
+    await platform.invokeMethod('mkdir', {'name': path});
   }
 
-  static Future<void> rename(String oldName, String newName) async {
-    await platform.invokeMethod('rename', {'old': oldName, 'new': newName});
+  static Future<void> rename(String oldPath, String newPath) async {
+    await platform.invokeMethod('rename', {'old': oldPath, 'new': newPath});
   }
 
-  static Future<void> delete(String name, bool isDir) async {
-    await platform.invokeMethod('delete', {'name': name, 'isDir': isDir});
+  static Future<void> delete(String path, bool isDir) async {
+    await platform.invokeMethod('delete', {'name': path, 'isDir': isDir});
   }
 
   static Future<void> upload(String localPath, String remotePath) async {
@@ -326,6 +327,8 @@ class _LoginScreenState extends State<LoginScreen> {
           portToUse,
           selectedProfile!.user,
           selectedProfile!.password,
+          passive: selectedProfile!.passiveMode,
+          binary: selectedProfile!.binaryMode,
         );
       }
     } catch (e) {
@@ -580,7 +583,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       itemCount: entities.length,
                       itemBuilder: (context, index) {
                         final entity = entities[index];
-                        // FileSystemEntity.isDirectorySync ile kesin olarak klasör tespiti
                         final isDir = FileSystemEntity.isDirectorySync(entity.path);
                         return ListTile(
                           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: Colors.blueAccent), title: Text(entity.path.split('/').last),
@@ -750,14 +752,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     super.dispose();
   }
 
-  // UYGULAMA ARKA PLANA ATILDIĞINDA VE GERİ DÖNÜLDÜĞÜNDE TETİKLENİR
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _isAppPaused = true;
     } else if (state == AppLifecycleState.resumed) {
       _isAppPaused = false;
-      _pingServer(); // Döndüğünde sessizce ping atıp durum kontrolü yapar.
+      _pingServer(); 
     }
   }
   
@@ -772,7 +773,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         isAlive = await NativeFtpClient.noop(); 
       }
       
-      // Eğer bağlantı kopmuşsa DİYALOG ÇIKARMADAN (silent) yeniden bağlanmayı dene
       if (!isAlive) {
         _initRemote(silent: true);
       }
@@ -912,12 +912,19 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         _sftpClient = await _sshClient!.sftp();
       } else {
         await NativeFtpClient.disconnect();
-        await NativeFtpClient.connect(widget.profile.mode, widget.profile.host, portToUse, widget.profile.user, widget.profile.password);
+        await NativeFtpClient.connect(
+          widget.profile.mode, 
+          widget.profile.host, 
+          portToUse, 
+          widget.profile.user, 
+          widget.profile.password,
+          passive: widget.profile.passiveMode,
+          binary: widget.profile.binaryMode,
+        );
       }
       _goToRemotePath(remotePath, silent: silent);
     } catch (e) {
       if (silent) {
-        // Sessiz yeniden bağlanma esnasında da hata alınırsa bu, internetin gerçekten gittiğini gösterir. Kırmızı yazı basılmaz.
         _showDisconnectDialog();
         if (mounted) setState(() { remoteLoading = false; remoteError = ''; });
       } else {
@@ -984,7 +991,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       } else targetPath = '/';
     } else targetPath = remotePath.endsWith('/') ? '$remotePath$dirName' : '$remotePath/$dirName';
     
-    // Klasöre tıklayarak geçiş yapıldığında silent=false (kullanıcı eylemi)
     _goToRemotePath(targetPath, silent: false); 
   }
 
@@ -1017,8 +1023,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 }
               } else {
                 try {
-                  if (_isSftp) await _sftpClient!.mkdir('$remotePath/$name'); 
-                  else await NativeFtpClient.makeDirectory(name);
+                  String newDirPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
+                  if (_isSftp) await _sftpClient!.mkdir(newDirPath); 
+                  else await NativeFtpClient.makeDirectory(newDirPath);
                   
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Directory "$name" created')));
                   _goToRemotePath(remotePath);
@@ -1062,8 +1069,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 }
               } else {
                 try {
-                  if (_isSftp) await _sftpClient!.rename('$remotePath/$oldName', '$remotePath/$newName'); 
-                  else await NativeFtpClient.rename(oldName, newName);
+                  String remoteOldPath = remotePath == '/' ? '/$oldName' : '$remotePath/$oldName';
+                  String remoteNewPath = remotePath == '/' ? '/$newName' : '$remotePath/$newName';
+                  if (_isSftp) await _sftpClient!.rename(remoteOldPath, remoteNewPath); 
+                  else await NativeFtpClient.rename(remoteOldPath, remoteNewPath);
+                  
                   _goToRemotePath(remotePath);
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$newName" renamed successfully')));
                 } catch (e) { 
@@ -1099,16 +1109,36 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     if (confirm) {
       if (isLocal) {
-        for (String path in items) { try { if (Directory(path).existsSync()) Directory(path).deleteSync(recursive: true); else File(path).deleteSync(); } catch (_) {} }
+        for (String path in items) { 
+          try { 
+            if (Directory(path).existsSync()) {
+              Directory(path).deleteSync(recursive: true); 
+            } else if (File(path).existsSync()) {
+              File(path).deleteSync(); 
+            }
+          } catch (_) {} 
+        }
         _loadLocal(localPath);
       } else {
         bool connectionLost = false;
         for (String name in items) {
           try {
+            String remoteItemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
+            bool isDir = remoteFiles.any((e) => e.name == name && e.isDir);
+            
             if (_isSftp) {
-              try { await _sftpClient!.remove('$remotePath/$name'); } catch(_) { try { await _sftpClient!.rmdir('$remotePath/$name'); } catch(e) { if(_isConnectionError(e)) connectionLost = true;} }
-            } else await NativeFtpClient.delete(name, false);
-          } catch (e) { if (_isConnectionError(e)) connectionLost = true; }
+              if (isDir) {
+                await _sftpClient!.rmdir(remoteItemPath);
+              } else {
+                await _sftpClient!.remove(remoteItemPath);
+              }
+            } else {
+              // FTP tarafına da seçilen öğenin klasör mü dosya mı olduğunu (isDir) ve tam yolunu iletiyoruz.
+              await NativeFtpClient.delete(remoteItemPath, isDir);
+            }
+          } catch (e) { 
+            if (_isConnectionError(e)) connectionLost = true; 
+          }
         }
         if (connectionLost) _showDisconnectDialog();
         _goToRemotePath(remotePath);
@@ -1296,8 +1326,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             currentTotal = file.lengthSync();
             updateDialog(0, currentTotal);
 
+            String fileName = file.path.split('/').last;
+            String remoteItemPath = remotePath == '/' ? '/$fileName' : '$remotePath/$fileName';
+
             if (_isSftp) {
-              final remoteFile = await _sftpClient!.open('$remotePath/${file.path.split('/').last}', mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
+              final remoteFile = await _sftpClient!.open(remoteItemPath, mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
               Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
                  await for (var chunk in source) {
                     if (isTransferCancelled) throw Exception("CANCELLED");
@@ -1310,17 +1343,19 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               await remoteFile.close(); 
               successCount++;
             } else {
-              await NativeFtpClient.upload(file.path, '$remotePath/${file.path.split('/').last}');
+              await NativeFtpClient.upload(file.path, remoteItemPath);
               if(!isTransferCancelled) successCount++;
             }
           }
         } else {
+          String remoteItemPath = remotePath == '/' ? '/$item' : '$remotePath/$item';
+          
           if (_isSftp) {
-             final fileStat = await _sftpClient!.stat('$remotePath/$item');
+             final fileStat = await _sftpClient!.stat(remoteItemPath);
              currentTotal = fileStat.size ?? 0;
              updateDialog(0, currentTotal);
 
-             final remoteFile = await _sftpClient!.open('$remotePath/$item'); 
+             final remoteFile = await _sftpClient!.open(remoteItemPath); 
              final localFile = File('$localPath/$item'); 
              final sink = localFile.openWrite();
              
@@ -1334,7 +1369,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
              await remoteFile.close();
              if (!isTransferCancelled) successCount++;
           } else {
-             await NativeFtpClient.download(item, '$localPath/$item'); 
+             await NativeFtpClient.download(remoteItemPath, '$localPath/$item'); 
              if(!isTransferCancelled) successCount++; 
           }
         }
@@ -1414,12 +1449,23 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
             ),
           ],
-          bottom: TabBar(controller: _tabController, indicatorColor: Colors.lightBlueAccent, tabs: const [Tab(icon: Icon(Icons.home), text: 'LOCAL'), Tab(icon: Icon(Icons.public), text: 'REMOTE')]),
+          bottom: TabBar(
+            controller: _tabController, 
+            indicatorColor: Colors.lightBlueAccent, 
+            tabs: const [Tab(icon: Icon(Icons.home), text: 'LOCAL'), Tab(icon: Icon(Icons.public), text: 'REMOTE')]
+          ),
         ),
         body: Column(
           children: [
             Container(color: const Color(0xFF1E2229), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: Row(children: [IconButton(icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent), onPressed: () { if (isLocal) { if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') _loadLocal(Directory(localPath).parent.path); } else _changeRemoteDirectory('..'); }), const Text("Up", style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), ElevatedButton(onPressed: (isLocal ? _selectedLocalPaths.isEmpty : _selectedRemoteNames.isEmpty) ? null : _transferSelectedItems, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B)), child: Text(isLocal ? 'Upload' : 'Download'))])),
-            Expanded(child: TabBarView(controller: _tabController, children: [_buildLocalList(), _buildRemoteList()])),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController, 
+                // BURASI SAĞA/SOLA KAYDIRMAYI (SWIPE) KAPATIR
+                physics: const NeverScrollableScrollPhysics(), 
+                children: [_buildLocalList(), _buildRemoteList()]
+              )
+            ),
           ],
         ),
       ),
