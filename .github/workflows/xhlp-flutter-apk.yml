@@ -1,0 +1,80 @@
+name: Flutter APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: release, debug, or profile
+        required: false
+        default: release
+      target_abi:
+        description: arm64, arm, split, or all
+        required: false
+        default: arm64
+      tree_shake:
+        description: "true or false"
+        required: false
+        default: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.24.5"
+
+      - name: Prepare Android platform
+        run: |
+          set -e
+          if [ ! -f pubspec.yaml ]; then
+            FOUND=$(find . -maxdepth 4 -name pubspec.yaml | head -1 || true)
+            [ -n "$FOUND" ] && cd "$(dirname "$FOUND")"
+          fi
+          test -f pubspec.yaml
+          echo "Project: $(pwd)"
+          rm -rf android
+          PN=$(grep -E '^name:' pubspec.yaml | head -1 | awk '{print $2}' | tr -d '\r"')
+          flutter create . --platforms=android --org com.example --project-name "${PN:-app}" || flutter create . --platforms=android
+          test -f android/app/build.gradle || test -f android/app/build.gradle.kts
+
+      - name: Build APK
+        env:
+          GH_MODE: ${{ github.event.inputs.build_mode || 'release' }}
+          GH_ABI: ${{ github.event.inputs.target_abi || 'arm64' }}
+          GH_TREE: ${{ github.event.inputs.tree_shake || 'true' }}
+        run: |
+          set -e
+          if [ ! -f pubspec.yaml ]; then
+            FOUND=$(find . -maxdepth 4 -name pubspec.yaml | head -1 || true)
+            [ -n "$FOUND" ] && cd "$(dirname "$FOUND")"
+          fi
+          flutter pub get
+          MODE="$GH_MODE"
+          ABI="$GH_ABI"
+          TREE="$GH_TREE"
+          EXTRA=""
+          if [ "$TREE" = "true" ] && [ "$MODE" = "release" ]; then
+            EXTRA="$EXTRA --tree-shake-icons"
+          fi
+          case "$ABI" in
+            arm64) EXTRA="$EXTRA --target-platform android-arm64" ;;
+            arm)   EXTRA="$EXTRA --target-platform android-arm" ;;
+            x64)   EXTRA="$EXTRA --target-platform android-x64" ;;
+            split) EXTRA="$EXTRA --split-per-abi" ;;
+            all)   ;;
+          esac
+          echo "Building MODE=$MODE ABI=$ABI EXTRA=$EXTRA"
+          flutter build apk --$MODE $EXTRA
+          find build/app/outputs -name "*.apk" -type f 2>/dev/null | head -20
+          ls -lah build/app/outputs/flutter-apk/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 14
