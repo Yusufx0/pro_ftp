@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart'; 
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -721,11 +721,16 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   bool _isDisconnectDialogShowing = false;
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
-  bool _isTransferring = false; // YENİ EKLENEN KİLİT
+  
+  bool _isTransferring = false; // BAĞLANTIYI KOPARMAYAN KİLİT
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
   final String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; 
+
+  bool _isEditingPath = false;
+  late TextEditingController _pathEditCtrl;
+  late FocusNode _pathFocusNode;
 
   @override
   void initState() {
@@ -736,13 +741,20 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
     
     _tabController = TabController(length: 2, vsync: this);
-    _tabController.addListener(() => setState(() {}));
+    _tabController.addListener(() => setState(() {
+      _isEditingPath = false; 
+    }));
+    
+    _pathEditCtrl = TextEditingController();
+    _pathFocusNode = FocusNode();
+
     _initLocal();
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
   }
 
+  // UYARLANABİLİR (ADAPTIVE) DİNAMİK REKLAM BOYUTUNU HESAPLAYAN KISIM
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -782,6 +794,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
     _bannerAd?.dispose(); 
+    _pathEditCtrl.dispose();
+    _pathFocusNode.dispose();
     super.dispose();
   }
 
@@ -796,7 +810,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
   
   Future<void> _pingServer() async {
-    // KİLİDİ BURAYA KOYDUK: Transfer yapılıyorsa ping atıp bağlantıyı bozma!
+    // BURADAKİ KİLİT SAYESİNDE ÇOKLU TRANSFER ESNASINDA PİNG ATILMAZ
     if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty || _isTransferring) return;
     try {
       bool isAlive = false;
@@ -840,6 +854,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   Future<bool> _onWillPop() async {
+    if (_isEditingPath) {
+      setState(() => _isEditingPath = false);
+      return false;
+    }
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
         if (!localLoading) _loadLocal(Directory(localPath).parent.path);
@@ -890,15 +908,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         );
       }
     );
-  }
-
-  void _openPathInputDialog(bool isLocal) {
-    TextEditingController pathCtrl = TextEditingController(text: isLocal ? localPath : remotePath);
-    showDialog(context: context, builder: (c) => AlertDialog(
-        title: Text(isLocal ? 'Go to Local Path' : 'Go to Remote Path'),
-        content: TextField(controller: pathCtrl, autofocus: true, decoration: const InputDecoration(hintText: 'Enter path'), onSubmitted: (val) { Navigator.pop(c); _navigateToPath(val.trim(), isLocal); }),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')), TextButton(onPressed: () { Navigator.pop(c); _navigateToPath(pathCtrl.text.trim(), isLocal); }, child: const Text('Go'))],
-    ));
   }
 
   Future<void> _navigateToPath(String newPath, bool isLocal) async {
@@ -1216,7 +1225,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     int successCount = 0; 
     bool connectionLost = false;
 
-    _isTransferring = true; // KİLİDİ KAPATTIK: PING İŞLEMİ DURDU
+    // TRANSFER BAŞLIYOR, PİNG ATMAYI DURDUR
+    _isTransferring = true;
     
     String currentFileName = "";
     int currentFileIndex = 0;
@@ -1342,90 +1352,93 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       ),
     );
 
-    for (int i = 0; i < itemsToTransfer.length; i++) {
-      if (isTransferCancelled) break;
-      String item = itemsToTransfer[i];
-      
-      startTime = DateTime.now();
-      currentTransferred = 0;
-      currentTotal = 0;
-      currentFileName = isLocal ? File(item).path.split('/').last : item;
-      currentFileIndex = i + 1;
-      updateDialog(0, 0);
+    try {
+      for (int i = 0; i < itemsToTransfer.length; i++) {
+        if (isTransferCancelled) break;
+        String item = itemsToTransfer[i];
+        
+        startTime = DateTime.now();
+        currentTransferred = 0;
+        currentTotal = 0;
+        currentFileName = isLocal ? File(item).path.split('/').last : item;
+        currentFileIndex = i + 1;
+        updateDialog(0, 0);
 
-      try {
-        if (isLocal) {
-          File file = File(item);
-          if (await file.exists()) {
-            currentTotal = file.lengthSync();
-            updateDialog(0, currentTotal);
+        try {
+          if (isLocal) {
+            File file = File(item);
+            if (await file.exists()) {
+              currentTotal = file.lengthSync();
+              updateDialog(0, currentTotal);
 
-            String fileName = file.path.split('/').last;
-            String remoteItemPath = remotePath == '/' ? '/$fileName' : '$remotePath/$fileName';
+              String fileName = file.path.split('/').last;
+              String remoteItemPath = remotePath == '/' ? '/$fileName' : '$remotePath/$fileName';
 
-            if (_isSftp) {
-              final remoteFile = await _sftpClient!.open(remoteItemPath, mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
-              Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
-                 await for (var chunk in source) {
-                    if (isTransferCancelled) throw Exception("CANCELLED");
-                    currentTransferred += chunk.length;
-                    updateDialog(currentTransferred, currentTotal);
-                    yield Uint8List.fromList(chunk);
-                 }
+              if (_isSftp) {
+                final remoteFile = await _sftpClient!.open(remoteItemPath, mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
+                Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
+                   await for (var chunk in source) {
+                      if (isTransferCancelled) throw Exception("CANCELLED");
+                      currentTransferred += chunk.length;
+                      updateDialog(currentTransferred, currentTotal);
+                      yield Uint8List.fromList(chunk);
+                   }
+                }
+                await remoteFile.write(progressStream(file.openRead()));
+                await remoteFile.close(); 
+                successCount++;
+              } else {
+                await NativeFtpClient.upload(file.path, remoteItemPath);
+                if(!isTransferCancelled) successCount++;
               }
-              await remoteFile.write(progressStream(file.openRead()));
-              await remoteFile.close(); 
-              successCount++;
+            }
+          } else {
+            String remoteItemPath = remotePath == '/' ? '/$item' : '$remotePath/$item';
+            
+            if (_isSftp) {
+               final fileStat = await _sftpClient!.stat(remoteItemPath);
+               currentTotal = fileStat.size ?? 0;
+               updateDialog(0, currentTotal);
+
+               final remoteFile = await _sftpClient!.open(remoteItemPath); 
+               final localFile = File('$localPath/$item'); 
+               final sink = localFile.openWrite();
+               
+               await for (var chunk in remoteFile.read()) { 
+                  if (isTransferCancelled) throw Exception("CANCELLED");
+                  sink.add(chunk); 
+                  currentTransferred += chunk.length;
+                  updateDialog(currentTransferred, currentTotal);
+               } 
+               await sink.close(); 
+               await remoteFile.close();
+               if (!isTransferCancelled) successCount++;
             } else {
-              await NativeFtpClient.upload(file.path, remoteItemPath);
-              if(!isTransferCancelled) successCount++;
+               await NativeFtpClient.download(remoteItemPath, '$localPath/$item'); 
+               if(!isTransferCancelled) successCount++; 
             }
           }
-        } else {
-          String remoteItemPath = remotePath == '/' ? '/$item' : '$remotePath/$item';
-          
-          if (_isSftp) {
-             final fileStat = await _sftpClient!.stat(remoteItemPath);
-             currentTotal = fileStat.size ?? 0;
-             updateDialog(0, currentTotal);
-
-             final remoteFile = await _sftpClient!.open(remoteItemPath); 
-             final localFile = File('$localPath/$item'); 
-             final sink = localFile.openWrite();
-             
-             await for (var chunk in remoteFile.read()) { 
-                if (isTransferCancelled) throw Exception("CANCELLED");
-                sink.add(chunk); 
-                currentTransferred += chunk.length;
-                updateDialog(currentTransferred, currentTotal);
-             } 
-             await sink.close(); 
-             await remoteFile.close();
-             if (!isTransferCancelled) successCount++;
+        } catch (e) {
+          String errStr = e.toString();
+          if (errStr.contains('CANCELLED')) {
+             isTransferCancelled = true;
+          } else if (_isConnectionError(e)) {
+             connectionLost = true;
           } else {
-             await NativeFtpClient.download(remoteItemPath, '$localPath/$item'); 
-             if(!isTransferCancelled) successCount++; 
+             if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(errStr, style: const TextStyle(color: Colors.white)),
+                  backgroundColor: Colors.redAccent,
+                  duration: const Duration(seconds: 4),
+                ));
+             }
           }
         }
-      } catch (e) {
-        String errStr = e.toString();
-        if (errStr.contains('CANCELLED')) {
-           isTransferCancelled = true;
-        } else if (_isConnectionError(e)) {
-           connectionLost = true;
-        } else {
-           if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(errStr, style: const TextStyle(color: Colors.white)),
-                backgroundColor: Colors.redAccent,
-                duration: const Duration(seconds: 4),
-              ));
-           }
-        }
       }
+    } finally {
+      // İŞLEM BİTTİĞİNDE (VEYA KOPTUĞUNDA) KİLİDİ AÇ, PİNG TEKRAR BAŞLASIN
+      _isTransferring = false;
     }
-
-    _isTransferring = false; // KİLİDİ AÇTIK: İŞLEM BİTTİ, PING TEKRAR BAŞLAYABİLİR
 
     if (mounted) Navigator.pop(context);
 
@@ -1468,22 +1481,70 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       onWillPop: _onWillPop,
       child: Scaffold(
         appBar: AppBar(
-          title: GestureDetector(onTap: () => _openPathInputDialog(isLocal), child: Text(isLocal ? localPath : remotePath, style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline))),
+          titleSpacing: 0,
+          title: _isEditingPath
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 16.0),
+                  child: TextField(
+                    controller: _pathEditCtrl,
+                    focusNode: _pathFocusNode,
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      hintText: 'Enter path...',
+                      hintStyle: TextStyle(color: Colors.white54),
+                    ),
+                    textInputAction: TextInputAction.go, 
+                    onSubmitted: (val) {
+                      setState(() => _isEditingPath = false);
+                      _navigateToPath(val.trim(), isLocal);
+                    },
+                  ),
+                )
+              : GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    setState(() {
+                      _isEditingPath = true;
+                      _pathEditCtrl.text = isLocal ? localPath : remotePath;
+                    });
+                    Future.delayed(const Duration(milliseconds: 50), () {
+                      if (mounted) _pathFocusNode.requestFocus();
+                    });
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      isLocal ? localPath : remotePath,
+                      style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
           actions: [
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                if (value == 'Download') _transferSelectedItems();
-                else if (value == 'Rename') { if ((isLocal ? _selectedLocalPaths.length : _selectedRemoteNames.length) == 1) _renameItem(isLocal ? _selectedLocalPaths.first : _selectedRemoteNames.first, isLocal); else ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select exactly one item to rename'))); }
-                else if (value == 'Delete') _deleteItems(isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList(), isLocal);
-                else if (value == 'CreateDir') _createDirectory();
-                else if (value == 'Sort') _showSortDialog();
-                else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _goToRemotePath(remotePath); } }
-                else if (value == 'SelectAll') { setState(() { if (isLocal) { if (_selectedLocalPaths.length == localFiles.length) _selectedLocalPaths.clear(); else _selectedLocalPaths.addAll(localFiles.map((e) => e.path)); } else { if (_selectedRemoteNames.length == remoteFiles.length) _selectedRemoteNames.clear(); else _selectedRemoteNames.addAll(remoteFiles.map((e) => e.name)); } }); }
-                else if (value == 'FilterSelect') _handleFilterSelect(isLocal);
-                else if (value == 'Logout') { if(!_isSftp) NativeFtpClient.disconnect(); _sshClient?.close(); Navigator.pop(context); }
-              },
-              itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
-            ),
+            if (_isEditingPath)
+              IconButton(
+                icon: const Icon(Icons.close), 
+                onPressed: () => setState(() => _isEditingPath = false),
+              )
+            else
+              PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'Download') _transferSelectedItems();
+                  else if (value == 'Rename') { if ((isLocal ? _selectedLocalPaths.length : _selectedRemoteNames.length) == 1) _renameItem(isLocal ? _selectedLocalPaths.first : _selectedRemoteNames.first, isLocal); else ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select exactly one item to rename'))); }
+                  else if (value == 'Delete') _deleteItems(isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList(), isLocal);
+                  else if (value == 'CreateDir') _createDirectory();
+                  else if (value == 'Sort') _showSortDialog();
+                  else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _goToRemotePath(remotePath); } }
+                  else if (value == 'SelectAll') { setState(() { if (isLocal) { if (_selectedLocalPaths.length == localFiles.length) _selectedLocalPaths.clear(); else _selectedLocalPaths.addAll(localFiles.map((e) => e.path)); } else { if (_selectedRemoteNames.length == remoteFiles.length) _selectedRemoteNames.clear(); else _selectedRemoteNames.addAll(remoteFiles.map((e) => e.name)); } }); }
+                  else if (value == 'FilterSelect') _handleFilterSelect(isLocal);
+                  else if (value == 'Logout') { if(!_isSftp) NativeFtpClient.disconnect(); _sshClient?.close(); Navigator.pop(context); }
+                },
+                itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
+              ),
           ],
         ),
         
@@ -1553,7 +1614,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entity = localFiles[index]; final isDir = FileSystemEntity.isDirectorySync(entity.path); final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
           onTap: () { if (isDir) _loadLocal(entity.path); else { setState(() { if (_selectedLocalPaths.contains(entity.path)) _selectedLocalPaths.remove(entity.path); else _selectedLocalPaths.add(entity.path); }); } },
           onLongPress: () { _showContextMenu(entity.path, sizeStr, true, isDir); },
         );
@@ -1571,7 +1632,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entry = remoteFiles[index]; final isDir = entry.isDir; String sizeStr = isDir ? "" : formatBytes(entry.size);
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(entry.name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
           onTap: () { if (isDir) _changeRemoteDirectory(entry.name); else { setState(() { if (_selectedRemoteNames.contains(entry.name)) _selectedRemoteNames.remove(entry.name); else _selectedRemoteNames.add(entry.name); }); } },
           onLongPress: () { _showContextMenu(entry.name, sizeStr, false, isDir); },
         );
