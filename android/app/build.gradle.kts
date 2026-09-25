@@ -18,19 +18,18 @@ plugins {
 
 android {
     namespace = "dev.corebyte.ftpcore"
-    compileSdk = 36 // GÜNCELLENDİ: webview_flutter_android hatası için 36 yapıldı
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        isCoreLibraryDesugaringEnabled = true // GÜNCELLENDİ: flutter_local_notifications hatası için eklendi
     }
 
     defaultConfig {
         applicationId = "dev.corebyte.ftpcore"
         minSdk = flutter.minSdkVersion
-        targetSdk = 35 
+        targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -67,7 +66,6 @@ flutter {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3") // GÜNCELLENDİ: Desugaring kütüphanesi eklendi
     implementation("commons-net:commons-net:3.10.0") 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") 
 }
