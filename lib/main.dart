@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart'; 
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -721,14 +721,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   bool _isDisconnectDialogShowing = false;
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
+  bool _isTransferring = false; // YENİ EKLENEN KİLİT
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
   final String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; 
-
-  bool _isEditingPath = false;
-  late TextEditingController _pathEditCtrl;
-  late FocusNode _pathFocusNode;
 
   @override
   void initState() {
@@ -739,20 +736,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
     
     _tabController = TabController(length: 2, vsync: this);
-    _tabController.addListener(() => setState(() {
-      _isEditingPath = false; 
-    }));
-    
-    _pathEditCtrl = TextEditingController();
-    _pathFocusNode = FocusNode();
-
+    _tabController.addListener(() => setState(() {}));
     _initLocal();
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
   }
 
-  // EKRAN OLUŞTUKTAN SONRA GENİŞLİĞİ ÖLÇÜP ADAPTIVE BANNER'I YÜKLÜYORUZ
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -762,10 +752,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   Future<void> _loadAd() async {
-    // Ekran genişliğini al
     final screenWidth = MediaQuery.of(context).size.width.truncate();
-    
-    // Cihaza en uygun uyarlanabilir (adaptive) boyutu Google'dan iste
     final size = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(screenWidth);
 
     if (size == null) return;
@@ -773,7 +760,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _bannerAd = BannerAd(
       adUnitId: _adUnitId,
       request: const AdRequest(),
-      size: size, // Hesaplanan bu ideal boyutu kullan
+      size: size, 
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           if (mounted) {
@@ -795,8 +782,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
     _bannerAd?.dispose(); 
-    _pathEditCtrl.dispose();
-    _pathFocusNode.dispose();
     super.dispose();
   }
 
@@ -811,7 +796,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
   
   Future<void> _pingServer() async {
-    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return;
+    // KİLİDİ BURAYA KOYDUK: Transfer yapılıyorsa ping atıp bağlantıyı bozma!
+    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty || _isTransferring) return;
     try {
       bool isAlive = false;
       if (_isSftp) {
@@ -854,10 +840,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
 
   Future<bool> _onWillPop() async {
-    if (_isEditingPath) {
-      setState(() => _isEditingPath = false);
-      return false;
-    }
     if (_tabController.index == 0) {
       if (localPath.isNotEmpty && localPath != '/storage/emulated/0' && localPath != '/') {
         if (!localLoading) _loadLocal(Directory(localPath).parent.path);
@@ -908,6 +890,15 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         );
       }
     );
+  }
+
+  void _openPathInputDialog(bool isLocal) {
+    TextEditingController pathCtrl = TextEditingController(text: isLocal ? localPath : remotePath);
+    showDialog(context: context, builder: (c) => AlertDialog(
+        title: Text(isLocal ? 'Go to Local Path' : 'Go to Remote Path'),
+        content: TextField(controller: pathCtrl, autofocus: true, decoration: const InputDecoration(hintText: 'Enter path'), onSubmitted: (val) { Navigator.pop(c); _navigateToPath(val.trim(), isLocal); }),
+        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')), TextButton(onPressed: () { Navigator.pop(c); _navigateToPath(pathCtrl.text.trim(), isLocal); }, child: const Text('Go'))],
+    ));
   }
 
   Future<void> _navigateToPath(String newPath, bool isLocal) async {
@@ -1224,6 +1215,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     bool isTransferCancelled = false;
     int successCount = 0; 
     bool connectionLost = false;
+
+    _isTransferring = true; // KİLİDİ KAPATTIK: PING İŞLEMİ DURDU
     
     String currentFileName = "";
     int currentFileIndex = 0;
@@ -1432,6 +1425,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     }
 
+    _isTransferring = false; // KİLİDİ AÇTIK: İŞLEM BİTTİ, PING TEKRAR BAŞLAYABİLİR
+
     if (mounted) Navigator.pop(context);
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
@@ -1473,70 +1468,22 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       onWillPop: _onWillPop,
       child: Scaffold(
         appBar: AppBar(
-          titleSpacing: 0,
-          title: _isEditingPath
-              ? Padding(
-                  padding: const EdgeInsets.only(left: 16.0),
-                  child: TextField(
-                    controller: _pathEditCtrl,
-                    focusNode: _pathFocusNode,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      hintText: 'Enter path...',
-                      hintStyle: TextStyle(color: Colors.white54),
-                    ),
-                    textInputAction: TextInputAction.go, 
-                    onSubmitted: (val) {
-                      setState(() => _isEditingPath = false);
-                      _navigateToPath(val.trim(), isLocal);
-                    },
-                  ),
-                )
-              : GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    setState(() {
-                      _isEditingPath = true;
-                      _pathEditCtrl.text = isLocal ? localPath : remotePath;
-                    });
-                    Future.delayed(const Duration(milliseconds: 50), () {
-                      if (mounted) _pathFocusNode.requestFocus();
-                    });
-                  },
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      isLocal ? localPath : remotePath,
-                      style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
+          title: GestureDetector(onTap: () => _openPathInputDialog(isLocal), child: Text(isLocal ? localPath : remotePath, style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline))),
           actions: [
-            if (_isEditingPath)
-              IconButton(
-                icon: const Icon(Icons.close), 
-                onPressed: () => setState(() => _isEditingPath = false),
-              )
-            else
-              PopupMenuButton<String>(
-                onSelected: (value) {
-                  if (value == 'Download') _transferSelectedItems();
-                  else if (value == 'Rename') { if ((isLocal ? _selectedLocalPaths.length : _selectedRemoteNames.length) == 1) _renameItem(isLocal ? _selectedLocalPaths.first : _selectedRemoteNames.first, isLocal); else ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select exactly one item to rename'))); }
-                  else if (value == 'Delete') _deleteItems(isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList(), isLocal);
-                  else if (value == 'CreateDir') _createDirectory();
-                  else if (value == 'Sort') _showSortDialog();
-                  else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _goToRemotePath(remotePath); } }
-                  else if (value == 'SelectAll') { setState(() { if (isLocal) { if (_selectedLocalPaths.length == localFiles.length) _selectedLocalPaths.clear(); else _selectedLocalPaths.addAll(localFiles.map((e) => e.path)); } else { if (_selectedRemoteNames.length == remoteFiles.length) _selectedRemoteNames.clear(); else _selectedRemoteNames.addAll(remoteFiles.map((e) => e.name)); } }); }
-                  else if (value == 'FilterSelect') _handleFilterSelect(isLocal);
-                  else if (value == 'Logout') { if(!_isSftp) NativeFtpClient.disconnect(); _sshClient?.close(); Navigator.pop(context); }
-                },
-                itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
-              ),
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'Download') _transferSelectedItems();
+                else if (value == 'Rename') { if ((isLocal ? _selectedLocalPaths.length : _selectedRemoteNames.length) == 1) _renameItem(isLocal ? _selectedLocalPaths.first : _selectedRemoteNames.first, isLocal); else ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select exactly one item to rename'))); }
+                else if (value == 'Delete') _deleteItems(isLocal ? _selectedLocalPaths.toList() : _selectedRemoteNames.toList(), isLocal);
+                else if (value == 'CreateDir') _createDirectory();
+                else if (value == 'Sort') _showSortDialog();
+                else if (value == 'Refresh') { if (isLocal) _loadLocal(localPath); else { _goToRemotePath(remotePath); } }
+                else if (value == 'SelectAll') { setState(() { if (isLocal) { if (_selectedLocalPaths.length == localFiles.length) _selectedLocalPaths.clear(); else _selectedLocalPaths.addAll(localFiles.map((e) => e.path)); } else { if (_selectedRemoteNames.length == remoteFiles.length) _selectedRemoteNames.clear(); else _selectedRemoteNames.addAll(remoteFiles.map((e) => e.name)); } }); }
+                else if (value == 'FilterSelect') _handleFilterSelect(isLocal);
+                else if (value == 'Logout') { if(!_isSftp) NativeFtpClient.disconnect(); _sshClient?.close(); Navigator.pop(context); }
+              },
+              itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
+            ),
           ],
         ),
         
@@ -1545,14 +1492,14 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             if (_isBannerAdLoaded && _bannerAd != null)
               Container(
                 color: Colors.black, 
-                width: _bannerAd!.size.width.toDouble(), // Cihaz genişliğine dinamik uyar
-                height: _bannerAd!.size.height.toDouble(), // Orantılı yüksekliği ayarlar
+                width: _bannerAd!.size.width.toDouble(),
+                height: _bannerAd!.size.height.toDouble(),
                 alignment: Alignment.center,
                 child: AdWidget(ad: _bannerAd!),
               ),
-              
+            
             Container(
-              color: const Color(0xFF000000), 
+              color: const Color(0xFF000000),
               child: TabBar(
                 controller: _tabController, 
                 indicatorColor: Colors.lightBlueAccent, 
@@ -1606,7 +1553,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entity = localFiles[index]; final isDir = FileSystemEntity.isDirectorySync(entity.path); final name = entity.path.split('/').last; String sizeStr = ""; if (!isDir) try { sizeStr = formatBytes(File(entity.path).lengthSync()); } catch (_) {}
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
           onTap: () { if (isDir) _loadLocal(entity.path); else { setState(() { if (_selectedLocalPaths.contains(entity.path)) _selectedLocalPaths.remove(entity.path); else _selectedLocalPaths.add(entity.path); }); } },
           onLongPress: () { _showContextMenu(entity.path, sizeStr, true, isDir); },
         );
@@ -1624,7 +1571,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final entry = remoteFiles[index]; final isDir = entry.isDir; String sizeStr = isDir ? "" : formatBytes(entry.size);
         return ListTile(
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(entry.name),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), isDir ? const SizedBox.shrink() : Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
           onTap: () { if (isDir) _changeRemoteDirectory(entry.name); else { setState(() { if (_selectedRemoteNames.contains(entry.name)) _selectedRemoteNames.remove(entry.name); else _selectedRemoteNames.add(entry.name); }); } },
           onLongPress: () { _showContextMenu(entry.name, sizeStr, false, isDir); },
         );
