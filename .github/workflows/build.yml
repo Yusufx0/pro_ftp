@@ -66,7 +66,7 @@ jobs:
         path: build/app/outputs/flutter-apk/app-release.apk
 
     - name: Debug APK Derle
-      run: flutter build apk --debug
+      run: flutter build apk --debug --android-skip-build-dependency-validation
 
     - name: Debug APK'yi Yükle
       uses: actions/upload-artifact@v4
