@@ -11,6 +11,7 @@ import org.apache.commons.net.io.CopyStreamAdapter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.time.Duration
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "ftp_native"
@@ -111,9 +112,11 @@ class MainActivity: FlutterActivity() {
 
         ftpClient?.apply {
             connectTimeout = 15000
-            dataTimeout = 15000
-            controlKeepAliveTimeout = 15
-            controlKeepAliveReplyTimeout = 15000
+            
+            // Düz tam sayılar yerine java.time.Duration nesneleri atandı
+            dataTimeout = Duration.ofMillis(15000)
+            controlKeepAliveTimeout = Duration.ofSeconds(15)
+            controlKeepAliveReplyTimeout = Duration.ofMillis(15000)
             
             connect(host, port)
             val success = login(user, pass)
