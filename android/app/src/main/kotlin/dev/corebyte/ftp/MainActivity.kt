@@ -18,11 +18,9 @@ class MainActivity: FlutterActivity() {
     private var ftpClient: FTPClient? = null
     private var methodChannel: MethodChannel? = null
     
-    // İşlemleri iptal etmek için kontrol bayrağı
     @Volatile
     private var isTransferCancelled = false
     
-    // İşlemleri arayüzü dondurmadan arka planda yapmak için Coroutine Scope
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -30,7 +28,6 @@ class MainActivity: FlutterActivity() {
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
 
         methodChannel?.setMethodCallHandler { call, result ->
-            // Her gelen komutu arayüzü kitlememek için arka plana (Dispatchers.IO) atıyoruz
             ioScope.launch {
                 try {
                     when (call.method) {
@@ -113,10 +110,12 @@ class MainActivity: FlutterActivity() {
         ftpClient?.apply {
             connectTimeout = 15000
             
-            // Düz tam sayılar yerine java.time.Duration nesneleri atandı
+            // Sadece bu satır Duration formatını talep ediyor
             dataTimeout = Duration.ofMillis(15000)
-            controlKeepAliveTimeout = Duration.ofSeconds(15)
-            controlKeepAliveReplyTimeout = Duration.ofMillis(15000)
+            
+            // Sistem bu ikisi için ısrarla sayı bekliyor (Long ve Int formatında)
+            controlKeepAliveTimeout = 15L 
+            controlKeepAliveReplyTimeout = 15000
             
             connect(host, port)
             val success = login(user, pass)
@@ -176,7 +175,7 @@ class MainActivity: FlutterActivity() {
         FileOutputStream(localFile).use { outputStream ->
             val success = ftpClient?.retrieveFile(remotePath, outputStream)
             if (isTransferCancelled) {
-                localFile.delete() // İptal edildiyse çöp dosyayı sil
+                localFile.delete() 
                 throw java.lang.Exception("CANCELLED")
             }
             if (success != true) throw java.lang.Exception("Download failed")
@@ -185,7 +184,6 @@ class MainActivity: FlutterActivity() {
         withContext(Dispatchers.Main) { result.success(null) }
     }
 
-    // Aktarım yüzdesini koparma ve iletme mantığı
     private fun setupProgressListener() {
         ftpClient?.setCopyStreamListener(object : CopyStreamAdapter() {
             private var lastReportTime = System.currentTimeMillis()
@@ -200,7 +198,6 @@ class MainActivity: FlutterActivity() {
                 }
                 
                 val now = System.currentTimeMillis()
-                // Arayüzü boğmamak için sadece 250ms'de bir veya işlem bittiğinde Flutter'a güncelleme gönder
                 if (now - lastReportTime > 250 || totalBytesTransferred == streamSize) {
                     runOnUiThread {
                         methodChannel?.invokeMethod(
