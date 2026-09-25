@@ -47,10 +47,12 @@ jobs:
         echo "keyAlias=$KEY_ALIAS" >> android/app/key.properties
         echo "storeFile=upload_keystore.jks" >> android/app/key.properties
 
+    - name: Eksik Android Platformlarını Kur
+      run: yes | sdkmanager "platforms;android-37" "platforms;android-36" "platforms;android-35"
+
     - name: Release AAB Derle
       run: flutter build appbundle --release --android-skip-build-dependency-validation
       
-
     - name: AAB'yi Yükle
       uses: actions/upload-artifact@v4
       with:
@@ -60,7 +62,6 @@ jobs:
     - name: Release APK Derle
       run: flutter build apk --release --android-skip-build-dependency-validation
       
-
     - name: APK'yi Yükle
       uses: actions/upload-artifact@v4
       with:
