@@ -109,11 +109,7 @@ class MainActivity: FlutterActivity() {
 
         ftpClient?.apply {
             connectTimeout = 15000
-            
-            // Sadece bu satır Duration formatını talep ediyor
             dataTimeout = Duration.ofMillis(15000)
-            
-            // Sistem bu ikisi için ısrarla sayı bekliyor (Long ve Int formatında)
             controlKeepAliveTimeout = 15L 
             controlKeepAliveReplyTimeout = 15000
             
