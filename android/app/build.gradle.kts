@@ -18,7 +18,7 @@ plugins {
 
 android {
     namespace = "dev.corebyte.ftpcore"
-    compileSdk = 34
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -29,7 +29,7 @@ android {
     defaultConfig {
         applicationId = "dev.corebyte.ftpcore"
         minSdk = flutter.minSdkVersion
-        targetSdk = 34
+        targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
