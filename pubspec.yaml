@@ -17,6 +17,7 @@ dependencies:
   path_provider: ^2.1.6
   dartssh2: ^3.3.1
   google_mobile_ads: ^5.3.1
+  flutter_local_notifications: ^17.0.0 # BİLDİRİM VE ARKA PLAN SERVİSİ İÇİN EKLENDİ
 
 dev_dependencies:
   flutter_test:
