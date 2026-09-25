@@ -750,14 +750,30 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
-    _loadAd(); 
   }
 
-  void _loadAd() {
+  // EKRAN OLUŞTUKTAN SONRA GENİŞLİĞİ ÖLÇÜP ADAPTIVE BANNER'I YÜKLÜYORUZ
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_isBannerAdLoaded && _bannerAd == null) {
+      _loadAd();
+    }
+  }
+
+  Future<void> _loadAd() async {
+    // Ekran genişliğini al
+    final screenWidth = MediaQuery.of(context).size.width.truncate();
+    
+    // Cihaza en uygun uyarlanabilir (adaptive) boyutu Google'dan iste
+    final size = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(screenWidth);
+
+    if (size == null) return;
+
     _bannerAd = BannerAd(
       adUnitId: _adUnitId,
       request: const AdRequest(),
-      size: AdSize.largeBanner,
+      size: size, // Hesaplanan bu ideal boyutu kullan
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           if (mounted) {
@@ -1470,7 +1486,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                       hintText: 'Enter path...',
                       hintStyle: TextStyle(color: Colors.white54),
                     ),
-                    textInputAction: TextInputAction.go, // Doğrudan telefon klavyesindeki "Enter/Git" tuşunu tetikler
+                    textInputAction: TextInputAction.go, 
                     onSubmitted: (val) {
                       setState(() => _isEditingPath = false);
                       _navigateToPath(val.trim(), isLocal);
@@ -1503,7 +1519,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           actions: [
             if (_isEditingPath)
               IconButton(
-                icon: const Icon(Icons.close), // Sadece vazgeçmek için çarpı butonu var
+                icon: const Icon(Icons.close), 
                 onPressed: () => setState(() => _isEditingPath = false),
               )
             else
@@ -1529,8 +1545,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             if (_isBannerAdLoaded && _bannerAd != null)
               Container(
                 color: Colors.black, 
-                width: double.infinity,
-                height: _bannerAd!.size.height.toDouble(),
+                width: _bannerAd!.size.width.toDouble(), // Cihaz genişliğine dinamik uyar
+                height: _bannerAd!.size.height.toDouble(), // Orantılı yüksekliği ayarlar
                 alignment: Alignment.center,
                 child: AdWidget(ad: _bannerAd!),
               ),
