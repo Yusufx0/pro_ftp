@@ -9,11 +9,42 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // EKLENDİ
 
-void main() {
+// --- BİLDİRİM GLOBAL DEĞİŞKENLERİ ---
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+final StreamController<String?> selectNotificationStream = StreamController<String?>.broadcast();
+
+@pragma('vm:entry-point')
+void notificationTapBackground(NotificationResponse notificationResponse) {
+  if (notificationResponse.actionId == 'cancel_transfer') {
+    NativeFtpClient.cancel();
+  }
+}
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MobileAds.instance.initialize(); 
+  MobileAds.instance.initialize();
   NativeFtpClient.init();
+
+  // BİLDİRİM İZNİ VE KURULUMU
+  if (Platform.isAndroid) {
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  }
+
+  const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const InitializationSettings initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
+  
+  await flutterLocalNotificationsPlugin.initialize(
+    initializationSettings,
+    onDidReceiveNotificationResponse: (NotificationResponse response) {
+      selectNotificationStream.add(response.actionId);
+    },
+    onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
+  );
+
   runApp(const FtpProApp());
 }
 
@@ -48,6 +79,7 @@ class FtpProApp extends StatelessWidget {
   }
 }
 
+// --- VERİ MODELİ ---
 class FtpProfile {
   String name;
   String mode;
@@ -120,6 +152,7 @@ class RemoteEntry {
   RemoteEntry({required this.name, required this.isDir, required this.size});
 }
 
+// --- YARDIMCI FONKSİYONLAR ---
 String formatBytes(int bytes) {
   if (bytes <= 0) return "0 B";
   const suffixes = ["B", "KB", "MB", "GB", "TB"];
@@ -127,6 +160,7 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
+// --- NATIVE FTP KÖPRÜSÜ ---
 class NativeFtpClient {
   static const platform = MethodChannel('ftp_native');
   static Function(int transferred, int total)? onProgress;
@@ -203,6 +237,7 @@ class NativeFtpClient {
   }
 }
 
+// --- GİRİŞ EKRANI (LOGIN) ---
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -423,6 +458,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+// --- PROFİL DÜZENLEME EKRANI ---
 class EditProfileScreen extends StatefulWidget {
   final FtpProfile? profile;
   const EditProfileScreen({super.key, this.profile});
@@ -690,6 +726,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 }
 
+// --- DOSYA YÖNETİCİSİ EKRANI ---
 class DualFileManagerScreen extends StatefulWidget {
   final FtpProfile profile;
   const DualFileManagerScreen({super.key, required this.profile});
@@ -721,7 +758,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   bool _isDisconnectDialogShowing = false;
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
-  bool _isTransferring = false; // YENİ EKLENEN KİLİT
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
@@ -741,26 +777,15 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
+    
+    _loadAd(); 
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_isBannerAdLoaded && _bannerAd == null) {
-      _loadAd();
-    }
-  }
-
-  Future<void> _loadAd() async {
-    final screenWidth = MediaQuery.of(context).size.width.truncate();
-    final size = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(screenWidth);
-
-    if (size == null) return;
-
+  void _loadAd() {
     _bannerAd = BannerAd(
       adUnitId: _adUnitId,
       request: const AdRequest(),
-      size: size, 
+      size: AdSize.banner,
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           if (mounted) {
@@ -782,6 +807,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
     _bannerAd?.dispose(); 
+    
     super.dispose();
   }
 
@@ -796,8 +822,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
   
   Future<void> _pingServer() async {
-    // KİLİDİ BURAYA KOYDUK: Transfer yapılıyorsa ping atıp bağlantıyı bozma!
-    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty || _isTransferring) return;
+    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return;
     try {
       bool isAlive = false;
       if (_isSftp) {
@@ -1215,8 +1240,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     bool isTransferCancelled = false;
     int successCount = 0; 
     bool connectionLost = false;
-
-    _isTransferring = true; // KİLİDİ KAPATTIK: PING İŞLEMİ DURDU
     
     String currentFileName = "";
     int currentFileIndex = 0;
@@ -1225,6 +1248,40 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     DateTime startTime = DateTime.now();
     StateSetter? dialogSetState;
 
+    // --- BİLDİRİM ÇUBUĞUNDAN İPTAL İŞLEMİNİ DİNLE ---
+    StreamSubscription? actionSub = selectNotificationStream.stream.listen((actionId) {
+      if (actionId == 'cancel_transfer') {
+        isTransferCancelled = true;
+        if (!_isSftp) NativeFtpClient.cancel();
+      }
+    });
+
+    // --- FOREGROUND SERVICE BAŞLAT (Uygulamanın arka planda ölmesini engeller) ---
+    if (Platform.isAndroid) {
+      await flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.startForegroundService(
+            888,
+            'Ftp Core',
+            'Transfer başlatılıyor...',
+            notificationDetails: const AndroidNotificationDetails(
+              'transfer_channel',
+              'FTP Transferleri',
+              channelDescription: 'Arka planda dosya aktarım durumu',
+              importance: Importance.low,
+              priority: Priority.low,
+              ongoing: true,
+              showProgress: true,
+              maxProgress: 100,
+              progress: 0,
+              icon: '@mipmap/ic_launcher',
+              actions: [
+                AndroidNotificationAction('cancel_transfer', 'İptal Et', cancelNotification: false)
+              ],
+            ),
+          );
+    }
+
     void updateDialog(int transferred, int total) {
       if (mounted && dialogSetState != null) {
         dialogSetState!(() {
@@ -1232,10 +1289,39 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           currentTotal = total;
         });
       }
+      
+      // --- BİLDİRİM İLERLEME ÇUBUĞUNU GÜNCELLE ---
+      if (total > 0 && Platform.isAndroid && !isTransferCancelled) {
+        int percentage = ((transferred / total) * 100).toInt();
+        flutterLocalNotificationsPlugin.show(
+          888,
+          'Ftp Core Transfer',
+          '$currentFileName ($currentFileIndex/${itemsToTransfer.length})',
+          NotificationDetails(
+            android: AndroidNotificationDetails(
+              'transfer_channel',
+              'FTP Transferleri',
+              channelDescription: 'Arka planda dosya aktarım durumu',
+              importance: Importance.low,
+              priority: Priority.low,
+              ongoing: true,
+              onlyAlertOnce: true, // Sesi ve titreşimi her yüzdede tekrar çalmaz
+              showProgress: true,
+              maxProgress: 100,
+              progress: percentage,
+              icon: '@mipmap/ic_launcher',
+              actions: [
+                const AndroidNotificationAction('cancel_transfer', 'İptal Et', cancelNotification: false)
+              ],
+            ),
+          ),
+        );
+      }
     }
 
     NativeFtpClient.onProgress = updateDialog;
 
+    // TRANSFER STATUS MODAL
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1425,18 +1511,43 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     }
 
-    _isTransferring = false; // KİLİDİ AÇTIK: İŞLEM BİTTİ, PING TEKRAR BAŞLAYABİLİR
-
     if (mounted) Navigator.pop(context);
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
     
+    // --- TRANSFER BİTİŞİ, SERVİSİ DURDUR VE BİLDİRİMİ GÜSTER ---
+    if (Platform.isAndroid) {
+      await flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.stopForegroundService();
+    }
+    actionSub.cancel();
+
     if (connectionLost) {
       _showDisconnectDialog();
     } else if (isTransferCancelled) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transfer cancelled')));
     } else if (successCount > 0) {
+      
+      // BAŞARI BİLDİRİMİ EKLENDİ
+      if (Platform.isAndroid && !isTransferCancelled) {
+        flutterLocalNotificationsPlugin.show(
+          999, // Tamamlanma bildirimi için farklı bir ID
+          'Ftp Core',
+          'Dosya transferleri tamamlandı', // İstenen tam cümle
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'transfer_channel',
+              'FTP Transferleri',
+              importance: Importance.high,
+              priority: Priority.high,
+              icon: '@mipmap/ic_launcher',
+            ),
+          ),
+        );
+      }
+
       showDialog(context: context, builder: (c) => AlertDialog(
           title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
           content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
@@ -1485,50 +1596,23 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
             ),
           ],
+          bottom: TabBar(
+            controller: _tabController, 
+            indicatorColor: Colors.lightBlueAccent, 
+            tabs: const [Tab(icon: Icon(Icons.home), text: 'LOCAL'), Tab(icon: Icon(Icons.public), text: 'REMOTE')]
+          ),
         ),
         
         body: Column(
           children: [
             if (_isBannerAdLoaded && _bannerAd != null)
               Container(
-                color: Colors.black, 
+                color: Colors.black,
                 width: _bannerAd!.size.width.toDouble(),
                 height: _bannerAd!.size.height.toDouble(),
-                alignment: Alignment.center,
                 child: AdWidget(ad: _bannerAd!),
               ),
-            
-            Container(
-              color: const Color(0xFF000000),
-              child: TabBar(
-                controller: _tabController, 
-                indicatorColor: Colors.lightBlueAccent, 
-                labelPadding: EdgeInsets.zero,
-                tabs: [
-                  Tab(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.home, size: 18), 
-                        SizedBox(width: 6), 
-                        Text('LOCAL')
-                      ],
-                    ),
-                  ), 
-                  Tab(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.public, size: 18), 
-                        SizedBox(width: 6), 
-                        Text('REMOTE')
-                      ],
-                    ),
-                  )
-                ]
-              ),
-            ),
-            
+              
             Container(color: const Color(0xFF1E2229), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: Row(children: [IconButton(icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent), onPressed: () { if (isLocal) { if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') _loadLocal(Directory(localPath).parent.path); } else _changeRemoteDirectory('..'); }), const Text("Up", style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), ElevatedButton(onPressed: (isLocal ? _selectedLocalPaths.isEmpty : _selectedRemoteNames.isEmpty) ? null : _transferSelectedItems, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B)), child: Text(isLocal ? 'Upload' : 'Download'))])),
             
             Expanded(
