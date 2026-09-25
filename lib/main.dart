@@ -8,43 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // EKLENDİ
+import 'package:google_mobile_ads/google_mobile_ads.dart'; // ADMOB PAKETİ EKLENDİ
 
-// --- BİLDİRİM GLOBAL DEĞİŞKENLERİ ---
-final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
-final StreamController<String?> selectNotificationStream = StreamController<String?>.broadcast();
-
-@pragma('vm:entry-point')
-void notificationTapBackground(NotificationResponse notificationResponse) {
-  if (notificationResponse.actionId == 'cancel_transfer') {
-    NativeFtpClient.cancel();
-  }
-}
-
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  MobileAds.instance.initialize();
+  MobileAds.instance.initialize(); // ADMOB SİSTEMİ BAŞLATILDI
   NativeFtpClient.init();
-
-  // BİLDİRİM İZNİ VE KURULUMU
-  if (Platform.isAndroid) {
-    await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
-  }
-
-  const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
-  const InitializationSettings initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
-  
-  await flutterLocalNotificationsPlugin.initialize(
-    initializationSettings,
-    onDidReceiveNotificationResponse: (NotificationResponse response) {
-      selectNotificationStream.add(response.actionId);
-    },
-    onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
-  );
-
   runApp(const FtpProApp());
 }
 
@@ -759,8 +728,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
 
+  // --- ADMOB DEĞİŞKENLERİ EKLENDİ ---
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
+  // GOOGLE TEST BANNER ID (Yayına çıkarken kendi reklam birimi kimliğin ile değiştir)
   final String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; 
 
   @override
@@ -778,9 +749,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
     
+    // ADMOB REKLAM YÜKLEME FONKSİYONU ÇAĞRILDI
     _loadAd(); 
   }
 
+  // --- ADMOB REKLAM YÜKLEME METODU EKLENDİ ---
   void _loadAd() {
     _bannerAd = BannerAd(
       adUnitId: _adUnitId,
@@ -806,6 +779,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _sshClient?.close();
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
+    
+    // ADMOB REKLAMI BELLEKTEN TEMİZLENDİ
     _bannerAd?.dispose(); 
     
     super.dispose();
@@ -1192,6 +1167,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 await _sftpClient!.remove(remoteItemPath);
               }
             } else {
+              // FTP tarafına da seçilen öğenin klasör mü dosya mı olduğunu (isDir) ve tam yolunu iletiyoruz.
               await NativeFtpClient.delete(remoteItemPath, isDir);
             }
           } catch (e) { 
@@ -1248,74 +1224,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     DateTime startTime = DateTime.now();
     StateSetter? dialogSetState;
 
-    // --- BİLDİRİM ÇUBUĞUNDAN İPTAL İŞLEMİNİ DİNLE ---
-    StreamSubscription? actionSub = selectNotificationStream.stream.listen((actionId) {
-      if (actionId == 'cancel_transfer') {
-        isTransferCancelled = true;
-        if (!_isSftp) NativeFtpClient.cancel();
-      }
-    });
-
-    // --- FOREGROUND SERVICE BAŞLAT (Uygulamanın arka planda ölmesini engeller) ---
-    if (Platform.isAndroid) {
-      await flutterLocalNotificationsPlugin
-          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-          ?.startForegroundService(
-            888,
-            'Ftp Core',
-            'Transfer başlatılıyor...',
-            notificationDetails: const AndroidNotificationDetails(
-              'transfer_channel',
-              'FTP Transferleri',
-              channelDescription: 'Arka planda dosya aktarım durumu',
-              importance: Importance.low,
-              priority: Priority.low,
-              ongoing: true,
-              showProgress: true,
-              maxProgress: 100,
-              progress: 0,
-              icon: '@mipmap/ic_launcher',
-              actions: [
-                AndroidNotificationAction('cancel_transfer', 'İptal Et', cancelNotification: false)
-              ],
-            ),
-          );
-    }
-
     void updateDialog(int transferred, int total) {
       if (mounted && dialogSetState != null) {
         dialogSetState!(() {
           currentTransferred = transferred;
           currentTotal = total;
         });
-      }
-      
-      // --- BİLDİRİM İLERLEME ÇUBUĞUNU GÜNCELLE ---
-      if (total > 0 && Platform.isAndroid && !isTransferCancelled) {
-        int percentage = ((transferred / total) * 100).toInt();
-        flutterLocalNotificationsPlugin.show(
-          888,
-          'Ftp Core Transfer',
-          '$currentFileName ($currentFileIndex/${itemsToTransfer.length})',
-          NotificationDetails(
-            android: AndroidNotificationDetails(
-              'transfer_channel',
-              'FTP Transferleri',
-              channelDescription: 'Arka planda dosya aktarım durumu',
-              importance: Importance.low,
-              priority: Priority.low,
-              ongoing: true,
-              onlyAlertOnce: true, // Sesi ve titreşimi her yüzdede tekrar çalmaz
-              showProgress: true,
-              maxProgress: 100,
-              progress: percentage,
-              icon: '@mipmap/ic_launcher',
-              actions: [
-                const AndroidNotificationAction('cancel_transfer', 'İptal Et', cancelNotification: false)
-              ],
-            ),
-          ),
-        );
       }
     }
 
@@ -1516,38 +1430,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
     
-    // --- TRANSFER BİTİŞİ, SERVİSİ DURDUR VE BİLDİRİMİ GÜSTER ---
-    if (Platform.isAndroid) {
-      await flutterLocalNotificationsPlugin
-          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-          ?.stopForegroundService();
-    }
-    actionSub.cancel();
-
     if (connectionLost) {
       _showDisconnectDialog();
     } else if (isTransferCancelled) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transfer cancelled')));
     } else if (successCount > 0) {
-      
-      // BAŞARI BİLDİRİMİ EKLENDİ
-      if (Platform.isAndroid && !isTransferCancelled) {
-        flutterLocalNotificationsPlugin.show(
-          999, // Tamamlanma bildirimi için farklı bir ID
-          'Ftp Core',
-          'Dosya transferleri tamamlandı', // İstenen tam cümle
-          const NotificationDetails(
-            android: AndroidNotificationDetails(
-              'transfer_channel',
-              'FTP Transferleri',
-              importance: Importance.high,
-              priority: Priority.high,
-              icon: '@mipmap/ic_launcher',
-            ),
-          ),
-        );
-      }
-
       showDialog(context: context, builder: (c) => AlertDialog(
           title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
           content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
@@ -1603,21 +1490,26 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           ),
         ),
         
+        // --- REKLAMIN EKRANA YERLEŞTİRİLDİĞİ KISIM ---
         body: Column(
           children: [
+            // EĞER REKLAM YÜKLENDİYSE EN ÜSTTE GÖSTERİLECEK
             if (_isBannerAdLoaded && _bannerAd != null)
               Container(
-                color: Colors.black,
+                color: Colors.black, // Arkaplanla uyumlu olması için
                 width: _bannerAd!.size.width.toDouble(),
                 height: _bannerAd!.size.height.toDouble(),
                 child: AdWidget(ad: _bannerAd!),
               ),
               
+            // MEVCUT KONTROL ÇUBUĞUN
             Container(color: const Color(0xFF1E2229), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: Row(children: [IconButton(icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent), onPressed: () { if (isLocal) { if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') _loadLocal(Directory(localPath).parent.path); } else _changeRemoteDirectory('..'); }), const Text("Up", style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), ElevatedButton(onPressed: (isLocal ? _selectedLocalPaths.isEmpty : _selectedRemoteNames.isEmpty) ? null : _transferSelectedItems, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B)), child: Text(isLocal ? 'Upload' : 'Download'))])),
             
+            // MEVCUT DOSYA LİSTELERİ
             Expanded(
               child: TabBarView(
                 controller: _tabController, 
+                // BURASI SAĞA/SOLA KAYDIRMAYI (SWIPE) KAPATIR
                 physics: const NeverScrollableScrollPhysics(), 
                 children: [_buildLocalList(), _buildRemoteList()]
               )
