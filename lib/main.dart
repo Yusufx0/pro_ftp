@@ -8,11 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart'; // ADMOB PAKETİ EKLENDİ
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  MobileAds.instance.initialize(); // ADMOB SİSTEMİ BAŞLATILDI
+  MobileAds.instance.initialize(); 
   NativeFtpClient.init();
   runApp(const FtpProApp());
 }
@@ -48,7 +48,6 @@ class FtpProApp extends StatelessWidget {
   }
 }
 
-// --- VERİ MODELİ ---
 class FtpProfile {
   String name;
   String mode;
@@ -121,7 +120,6 @@ class RemoteEntry {
   RemoteEntry({required this.name, required this.isDir, required this.size});
 }
 
-// --- YARDIMCI FONKSİYONLAR ---
 String formatBytes(int bytes) {
   if (bytes <= 0) return "0 B";
   const suffixes = ["B", "KB", "MB", "GB", "TB"];
@@ -129,7 +127,6 @@ String formatBytes(int bytes) {
   return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
 }
 
-// --- NATIVE FTP KÖPRÜSÜ ---
 class NativeFtpClient {
   static const platform = MethodChannel('ftp_native');
   static Function(int transferred, int total)? onProgress;
@@ -206,7 +203,6 @@ class NativeFtpClient {
   }
 }
 
-// --- GİRİŞ EKRANI (LOGIN) ---
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -427,7 +423,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// --- PROFİL DÜZENLEME EKRANI ---
 class EditProfileScreen extends StatefulWidget {
   final FtpProfile? profile;
   const EditProfileScreen({super.key, this.profile});
@@ -695,7 +690,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 }
 
-// --- DOSYA YÖNETİCİSİ EKRANI ---
 class DualFileManagerScreen extends StatefulWidget {
   final FtpProfile profile;
   const DualFileManagerScreen({super.key, required this.profile});
@@ -727,11 +721,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   bool _isDisconnectDialogShowing = false;
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
+  bool _isTransferring = false; // YENİ EKLENEN KİLİT
 
-  // --- ADMOB DEĞİŞKENLERİ EKLENDİ ---
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
-  // GOOGLE TEST BANNER ID (Yayına çıkarken kendi reklam birimi kimliğin ile değiştir)
   final String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; 
 
   @override
@@ -748,17 +741,26 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _initRemote();
     
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
-    
-    // ADMOB REKLAM YÜKLEME FONKSİYONU ÇAĞRILDI
-    _loadAd(); 
   }
 
-  // --- ADMOB REKLAM YÜKLEME METODU EKLENDİ ---
-  void _loadAd() {
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_isBannerAdLoaded && _bannerAd == null) {
+      _loadAd();
+    }
+  }
+
+  Future<void> _loadAd() async {
+    final screenWidth = MediaQuery.of(context).size.width.truncate();
+    final size = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(screenWidth);
+
+    if (size == null) return;
+
     _bannerAd = BannerAd(
       adUnitId: _adUnitId,
       request: const AdRequest(),
-      size: AdSize.banner,
+      size: size, 
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           if (mounted) {
@@ -779,10 +781,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _sshClient?.close();
     if (!_isSftp) NativeFtpClient.disconnect();
     _tabController.dispose();
-    
-    // ADMOB REKLAMI BELLEKTEN TEMİZLENDİ
     _bannerAd?.dispose(); 
-    
     super.dispose();
   }
 
@@ -797,7 +796,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
   
   Future<void> _pingServer() async {
-    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty) return;
+    // KİLİDİ BURAYA KOYDUK: Transfer yapılıyorsa ping atıp bağlantıyı bozma!
+    if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty || _isTransferring) return;
     try {
       bool isAlive = false;
       if (_isSftp) {
@@ -1167,7 +1167,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 await _sftpClient!.remove(remoteItemPath);
               }
             } else {
-              // FTP tarafına da seçilen öğenin klasör mü dosya mı olduğunu (isDir) ve tam yolunu iletiyoruz.
               await NativeFtpClient.delete(remoteItemPath, isDir);
             }
           } catch (e) { 
@@ -1216,6 +1215,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     bool isTransferCancelled = false;
     int successCount = 0; 
     bool connectionLost = false;
+
+    _isTransferring = true; // KİLİDİ KAPATTIK: PING İŞLEMİ DURDU
     
     String currentFileName = "";
     int currentFileIndex = 0;
@@ -1235,7 +1236,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
     NativeFtpClient.onProgress = updateDialog;
 
-    // TRANSFER STATUS MODAL
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1425,6 +1425,8 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
     }
 
+    _isTransferring = false; // KİLİDİ AÇTIK: İŞLEM BİTTİ, PING TEKRAR BAŞLAYABİLİR
+
     if (mounted) Navigator.pop(context);
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
@@ -1483,33 +1485,55 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               itemBuilder: (BuildContext context) { return const [PopupMenuItem(value: 'Download', child: Text('Download/Upload')), PopupMenuItem(value: 'Rename', child: Text('Rename')), PopupMenuItem(value: 'Delete', child: Text('Delete')), PopupMenuItem(value: 'CreateDir', child: Text('Create dir.')), PopupMenuItem(value: 'Sort', child: Text('Sort')), PopupMenuItem(value: 'Refresh', child: Text('Refresh')), PopupMenuItem(value: 'SelectAll', child: Text('Select all/none')), PopupMenuItem(value: 'FilterSelect', child: Text('Filter Select')), PopupMenuItem(value: 'Logout', child: Text('Logout'))]; },
             ),
           ],
-          bottom: TabBar(
-            controller: _tabController, 
-            indicatorColor: Colors.lightBlueAccent, 
-            tabs: const [Tab(icon: Icon(Icons.home), text: 'LOCAL'), Tab(icon: Icon(Icons.public), text: 'REMOTE')]
-          ),
         ),
         
-        // --- REKLAMIN EKRANA YERLEŞTİRİLDİĞİ KISIM ---
         body: Column(
           children: [
-            // EĞER REKLAM YÜKLENDİYSE EN ÜSTTE GÖSTERİLECEK
             if (_isBannerAdLoaded && _bannerAd != null)
               Container(
-                color: Colors.black, // Arkaplanla uyumlu olması için
+                color: Colors.black, 
                 width: _bannerAd!.size.width.toDouble(),
                 height: _bannerAd!.size.height.toDouble(),
+                alignment: Alignment.center,
                 child: AdWidget(ad: _bannerAd!),
               ),
-              
-            // MEVCUT KONTROL ÇUBUĞUN
+            
+            Container(
+              color: const Color(0xFF000000),
+              child: TabBar(
+                controller: _tabController, 
+                indicatorColor: Colors.lightBlueAccent, 
+                labelPadding: EdgeInsets.zero,
+                tabs: [
+                  Tab(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.home, size: 18), 
+                        SizedBox(width: 6), 
+                        Text('LOCAL')
+                      ],
+                    ),
+                  ), 
+                  Tab(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.public, size: 18), 
+                        SizedBox(width: 6), 
+                        Text('REMOTE')
+                      ],
+                    ),
+                  )
+                ]
+              ),
+            ),
+            
             Container(color: const Color(0xFF1E2229), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: Row(children: [IconButton(icon: const Icon(Icons.arrow_upward, color: Colors.greenAccent), onPressed: () { if (isLocal) { if (!localLoading && localPath != '/storage/emulated/0' && localPath != '/') _loadLocal(Directory(localPath).parent.path); } else _changeRemoteDirectory('..'); }), const Text("Up", style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), ElevatedButton(onPressed: (isLocal ? _selectedLocalPaths.isEmpty : _selectedRemoteNames.isEmpty) ? null : _transferSelectedItems, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38404B)), child: Text(isLocal ? 'Upload' : 'Download'))])),
             
-            // MEVCUT DOSYA LİSTELERİ
             Expanded(
               child: TabBarView(
                 controller: _tabController, 
-                // BURASI SAĞA/SOLA KAYDIRMAYI (SWIPE) KAPATIR
                 physics: const NeverScrollableScrollPhysics(), 
                 children: [_buildLocalList(), _buildRemoteList()]
               )
