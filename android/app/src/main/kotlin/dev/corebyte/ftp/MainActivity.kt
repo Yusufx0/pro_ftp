@@ -1,4 +1,4 @@
-package dev.corebyte.ftpcore
+package com.topreqapps.ftpdesk
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
