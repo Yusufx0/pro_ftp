@@ -1371,7 +1371,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   Text('Modified: ${formatDate(modifiedTime)}', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 12),
                   
                   if (!isLocal) ...[
-                    // REMOTE SEKMESİ İÇİN TAM TABLO
                     if (owner.isNotEmpty || group.isNotEmpty) ...[
                       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Owner: $owner', style: const TextStyle(color: Colors.white70)), Text('Group: $group', style: const TextStyle(color: Colors.white70))]),
                       const SizedBox(height: 12),
@@ -1385,19 +1384,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                       ]
                     )
                   ] else ...[
-                     // LOCAL SEKMESİ İÇİN SADECE TİKLİ R VE W (TIKLANAMAZ/DEĞİŞTİRİLEMEZ)
                      Row(
                        mainAxisAlignment: MainAxisAlignment.start,
-                       children: [
-                         Row(children: const [
-                             Checkbox(value: true, onChanged: null), 
-                             Text('R', style: TextStyle(color: Colors.white70))
-                         ]),
-                         const SizedBox(width: 20),
-                         Row(children: const [
-                             Checkbox(value: true, onChanged: null), 
-                             Text('W', style: TextStyle(color: Colors.white70))
-                         ]),
+                       children: const [
+                         Row(children: [Checkbox(value: true, onChanged: null), Text('R', style: TextStyle(color: Colors.white70))]),
+                         SizedBox(width: 20),
+                         Row(children: [Checkbox(value: true, onChanged: null), Text('W', style: TextStyle(color: Colors.white70))]),
                        ],
                      )
                   ]
