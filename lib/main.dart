@@ -250,10 +250,51 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isConnecting = false;
   final _secureStorage = const FlutterSecureStorage();
 
+  BannerAd? _bannerAd;
+  bool _isBannerAdLoaded = false;
+  final String _adUnitId = 'ca-app-pub-1263489003546766/7584631450';
+
   @override
   void initState() {
     super.initState();
     _loadProfiles();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_isBannerAdLoaded && _bannerAd == null) {
+      _loadAd();
+    }
+  }
+
+  Future<void> _loadAd() async {
+    final screenWidth = MediaQuery.of(context).size.width.truncate();
+    final size = await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(screenWidth);
+
+    if (size == null) return;
+
+    _bannerAd = BannerAd(
+      adUnitId: _adUnitId,
+      request: const AdRequest(),
+      size: size, 
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (mounted) {
+            setState(() { _isBannerAdLoaded = true; });
+          }
+        },
+        onAdFailedToLoad: (ad, err) {
+          ad.dispose();
+        },
+      ),
+    )..load();
+  }
+
+  @override
+  void dispose() {
+    _bannerAd?.dispose();
+    super.dispose();
   }
 
   Future<void> _loadProfiles() async {
@@ -402,6 +443,14 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            if (_isBannerAdLoaded && _bannerAd != null)
+              Container(
+                color: Colors.black,
+                width: _bannerAd!.size.width.toDouble(),
+                height: _bannerAd!.size.height.toDouble(),
+                alignment: Alignment.center,
+                child: AdWidget(ad: _bannerAd!),
+              ),
             const Spacer(),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32.0),
