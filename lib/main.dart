@@ -1,3 +1,4 @@
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1171,7 +1172,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
   Future<void> _deleteItems(List<String> items, bool isLocal) async {
     if (items.isEmpty) return;
-    
+
     String dialogText;
     if (items.length == 1) {
       String itemName = isLocal ? items.first.split('/').last : items.first;
@@ -1181,44 +1182,52 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
 
     bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
-        title: const Text("Delete file(s)"), 
+        title: const Text("Delete file(s)"),
         content: Text(dialogText),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Cancel")), 
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Cancel")),
           TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("OK", style: TextStyle(color: Colors.red)))
         ],
     )) ?? false;
 
     if (confirm) {
       if (isLocal) {
-        for (String path in items) { 
-          try { 
+        for (String path in items) {
+          try {
             if (Directory(path).existsSync()) {
-              Directory(path).deleteSync(recursive: true); 
+              Directory(path).deleteSync(recursive: true);
             } else if (File(path).existsSync()) {
-              File(path).deleteSync(); 
+              File(path).deleteSync();
             }
-          } catch (_) {} 
+          } catch (_) {}
         }
         _loadLocal(localPath);
       } else {
         bool connectionLost = false;
         for (String name in items) {
+          String remoteItemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
+          bool isKnownDir = remoteFiles.any((e) => e.name == name && e.isDir);
+
           try {
-            String remoteItemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
-            bool isDir = remoteFiles.any((e) => e.name == name && e.isDir);
-            
             if (_isSftp) {
-              if (isDir) {
+              if (isKnownDir) {
                 await _sftpClient!.rmdir(remoteItemPath);
               } else {
-                await _sftpClient!.remove(remoteItemPath);
+                try {
+                   await _sftpClient!.remove(remoteItemPath);
+                } catch(e) {
+                   await _sftpClient!.rmdir(remoteItemPath);
+                }
               }
             } else {
-              await NativeFtpClient.delete(remoteItemPath, isDir);
+               try {
+                 await NativeFtpClient.delete(remoteItemPath, isKnownDir);
+               } catch(e) {
+                 await NativeFtpClient.delete(remoteItemPath, !isKnownDir);
+               }
             }
-          } catch (e) { 
-            if (_isConnectionError(e)) connectionLost = true; 
+          } catch (e) {
+            if (_isConnectionError(e)) connectionLost = true;
           }
         }
         if (connectionLost) _showDisconnectDialog();
@@ -1236,7 +1245,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       try {
         FileStat stat = FileStat.statSync(item.path);
         sizeStr = isDir ? "" : formatBytes(stat.size); modifiedTime = stat.modified;
-        perms = stat.mode & 0x1FF;
       } catch (_) {}
     } else {
       RemoteEntry entry = item;
@@ -1247,11 +1255,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     String formatDate(DateTime? date) {
       if (date == null) return 'N/A';
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      String d = date.day.toString().padLeft(2, '0'); 
-      String m = months[date.month - 1]; 
+      String d = date.day.toString().padLeft(2, '0');
+      String m = months[date.month - 1];
       String y = date.year.toString();
-      String hr = date.hour.toString().padLeft(2, '0'); 
-      String mn = date.minute.toString().padLeft(2, '0'); 
+      String hr = date.hour.toString().padLeft(2, '0');
+      String mn = date.minute.toString().padLeft(2, '0');
       String sc = date.second.toString().padLeft(2, '0');
       return '$d $m $y $hr:$mn:$sc';
     }
@@ -1284,18 +1292,38 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   Text('Type: ${isDir ? "Directory" : "File"}', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 6),
                   if (!isDir) ...[Text('Size: $sizeStr', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 6)],
                   Text('Modified: ${formatDate(modifiedTime)}', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 12),
-                  if (!isLocal && (owner.isNotEmpty || group.isNotEmpty)) ...[
-                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Owner: $owner', style: const TextStyle(color: Colors.white70)), Text('Group: $group', style: const TextStyle(color: Colors.white70))]),
-                    const SizedBox(height: 12),
-                  ],
-                  Table(
-                    columnWidths: const { 0: FlexColumnWidth(1.5), 1: FlexColumnWidth(1), 2: FlexColumnWidth(1), 3: FlexColumnWidth(1) },
-                    children: [
-                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Owner', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oR, onChanged: (v) => setState(() => oR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oW, onChanged: (v) => setState(() => oW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oX, onChanged: (v) => setState(() => oX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
-                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Group', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gR, onChanged: (v) => setState(() => gR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gW, onChanged: (v) => setState(() => gW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gX, onChanged: (v) => setState(() => gX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
-                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Other', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otR, onChanged: (v) => setState(() => otR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otW, onChanged: (v) => setState(() => otW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otX, onChanged: (v) => setState(() => otX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
-                    ]
-                  )
+                  
+                  if (!isLocal) ...[
+                    // REMOTE SEKMESİ İÇİN TAM TABLO
+                    if (owner.isNotEmpty || group.isNotEmpty) ...[
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Owner: $owner', style: const TextStyle(color: Colors.white70)), Text('Group: $group', style: const TextStyle(color: Colors.white70))]),
+                      const SizedBox(height: 12),
+                    ],
+                    Table(
+                      columnWidths: const { 0: FlexColumnWidth(1.5), 1: FlexColumnWidth(1), 2: FlexColumnWidth(1), 3: FlexColumnWidth(1) },
+                      children: [
+                        TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Owner', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oR, onChanged: (v) => setState(() => oR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oW, onChanged: (v) => setState(() => oW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oX, onChanged: (v) => setState(() => oX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                        TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Group', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gR, onChanged: (v) => setState(() => gR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gW, onChanged: (v) => setState(() => gW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gX, onChanged: (v) => setState(() => gX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                        TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Other', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otR, onChanged: (v) => setState(() => otR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otW, onChanged: (v) => setState(() => otW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otX, onChanged: (v) => setState(() => otX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                      ]
+                    )
+                  ] else ...[
+                     // LOCAL SEKMESİ İÇİN SADECE TİKLİ R VE W (TIKLANAMAZ/DEĞİŞTİRİLEMEZ)
+                     Row(
+                       mainAxisAlignment: MainAxisAlignment.start,
+                       children: [
+                         Row(children: const [
+                             Checkbox(value: true, onChanged: null), 
+                             Text('R', style: TextStyle(color: Colors.white70))
+                         ]),
+                         const SizedBox(width: 20),
+                         Row(children: const [
+                             Checkbox(value: true, onChanged: null), 
+                             Text('W', style: TextStyle(color: Colors.white70))
+                         ]),
+                       ],
+                     )
+                  ]
                 ],
               ),
             ),
@@ -1305,7 +1333,11 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 onPressed: () async {
                   Navigator.pop(context);
                   if (!isLocal) {
-                    // INTEGER ÇEVİRİSİ YERİNE DOĞRUDAN BOOLEAN DEĞERLERİ VERİYORUZ:
+                    int ownerP = (oR ? 4 : 0) + (oW ? 2 : 0) + (oX ? 1 : 0);
+                    int groupP = (gR ? 4 : 0) + (gW ? 2 : 0) + (gX ? 1 : 0);
+                    int otherP = (otR ? 4 : 0) + (otW ? 2 : 0) + (otX ? 1 : 0);
+                    String octalPerms = '$ownerP$groupP$otherP';
+
                     String itemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
                     try {
                       if (_isSftp) {
@@ -1313,31 +1345,20 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                           itemPath,
                           SftpFileAttrs(
                             mode: SftpFileMode(
-                              userRead: oR,
-                              userWrite: oW,
-                              userExecute: oX,
-                              groupRead: gR,
-                              groupWrite: gW,
-                              groupExecute: gX,
-                              otherRead: otR,
-                              otherWrite: otW,
-                              otherExecute: otX,
+                              userRead: oR, userWrite: oW, userExecute: oX,
+                              groupRead: gR, groupWrite: gW, groupExecute: gX,
+                              otherRead: otR, otherWrite: otW, otherExecute: otX,
                             ),
                           ),
                         );
                       } else {
-                        // Native FTP için yine de oktal hesabı tutalım
-                        int ownerP = (oR ? 4 : 0) + (oW ? 2 : 0) + (oX ? 1 : 0);
-                        int groupP = (gR ? 4 : 0) + (gW ? 2 : 0) + (gX ? 1 : 0);
-                        int otherP = (otR ? 4 : 0) + (otW ? 2 : 0) + (otX ? 1 : 0);
-                        String octalPerms = '$ownerP$groupP$otherP';
                         await NativeFtpClient.chmod(itemPath, octalPerms);
                       }
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permissions updated successfully')));
-                      _goToRemotePath(remotePath); 
+                      _goToRemotePath(remotePath);
                     } catch (e) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed: Server may not support CHMOD/SetStat'))); }
-                  } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permission edits supported for remote files only.'))); }
-                }, 
+                  }
+                },
                 child: const Text('OK', style: TextStyle(color: Colors.lightBlueAccent))
               ),
             ],
