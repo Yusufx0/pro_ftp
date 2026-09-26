@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "602670607213",
+    "project_id": "ftp-desk",
+    "storage_bucket": "ftp-desk.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:602670607213:android:e42d3123e8d39d5e428864",
+        "android_client_info": {
+          "package_name": "com.topreqapps.ftpdesk"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBL0JsA4jTe1YHSQxbpbPunZW5NHHqMSO4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
