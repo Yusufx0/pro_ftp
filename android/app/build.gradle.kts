@@ -17,7 +17,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.corebyte.ftpcore"
+    namespace = "com.topreqapps.ftpdesk"
     compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "dev.corebyte.ftpcore"
+        applicationId = "com.topreqapps.ftpdesk"
         minSdk = flutter.minSdkVersion
         targetSdk = 35
         versionCode = flutter.versionCode
