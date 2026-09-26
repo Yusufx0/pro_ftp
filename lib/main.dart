@@ -1305,21 +1305,37 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 onPressed: () async {
                   Navigator.pop(context);
                   if (!isLocal) {
-                    int ownerP = (oR ? 4 : 0) + (oW ? 2 : 0) + (oX ? 1 : 0);
-                    int groupP = (gR ? 4 : 0) + (gW ? 2 : 0) + (gX ? 1 : 0);
-                    int otherP = (otR ? 4 : 0) + (otW ? 2 : 0) + (otX ? 1 : 0);
-                    String octalPerms = '$ownerP$groupP$otherP';
-                    
+                    // INTEGER ÇEVİRİSİ YERİNE DOĞRUDAN BOOLEAN DEĞERLERİ VERİYORUZ:
                     String itemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
                     try {
                       if (_isSftp) {
-                        await _sftpClient!.setStat(itemPath, SftpFileAttrs(mode: SftpFileMode(int.parse(octalPerms, radix: 8))));
+                        await _sftpClient!.setStat(
+                          itemPath,
+                          SftpFileAttrs(
+                            mode: SftpFileMode(
+                              userRead: oR,
+                              userWrite: oW,
+                              userExecute: oX,
+                              groupRead: gR,
+                              groupWrite: gW,
+                              groupExecute: gX,
+                              otherRead: otR,
+                              otherWrite: otW,
+                              otherExecute: otX,
+                            ),
+                          ),
+                        );
                       } else {
+                        // Native FTP için yine de oktal hesabı tutalım
+                        int ownerP = (oR ? 4 : 0) + (oW ? 2 : 0) + (oX ? 1 : 0);
+                        int groupP = (gR ? 4 : 0) + (gW ? 2 : 0) + (gX ? 1 : 0);
+                        int otherP = (otR ? 4 : 0) + (otW ? 2 : 0) + (otX ? 1 : 0);
+                        String octalPerms = '$ownerP$groupP$otherP';
                         await NativeFtpClient.chmod(itemPath, octalPerms);
                       }
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Permissions updated to $octalPerms')));
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permissions updated successfully')));
                       _goToRemotePath(remotePath); 
-                    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: Server may not support CHMOD/SetStat'))); }
+                    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed: Server may not support CHMOD/SetStat'))); }
                   } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permission edits supported for remote files only.'))); }
                 }, 
                 child: const Text('OK', style: TextStyle(color: Colors.lightBlueAccent))
