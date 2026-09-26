@@ -1031,9 +1031,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             isDir: e.attr.isDirectory, 
             size: e.attr.size ?? 0, 
             modified: modTime, 
-            owner: e.attr.uid?.toString() ?? '', 
-            group: e.attr.gid?.toString() ?? '', 
-            permissions: e.attr.permissions ?? 0
+            owner: '', 
+            group: '', 
+            permissions: e.attr.mode ?? 0
           );
           if (entry.isDir) folders.add(entry); else files.add(entry);
         }
@@ -1306,11 +1306,14 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     
                     String itemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
                     try {
-                      if (_isSftp) await _sftpClient!.setstat(itemPath, SftpFileAttrs(permissions: int.parse(octalPerms, radix: 8)));
-                      else await NativeFtpClient.chmod(itemPath, octalPerms);
+                      if (_isSftp) {
+                        await _sftpClient!.setStat(itemPath, SftpFileAttrs(mode: int.parse(octalPerms, radix: 8)));
+                      } else {
+                        await NativeFtpClient.chmod(itemPath, octalPerms);
+                      }
                       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Permissions updated to $octalPerms')));
                       _goToRemotePath(remotePath); 
-                    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: Server may not support CHMOD'))); }
+                    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: Server may not support CHMOD/SetStat'))); }
                   } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permission edits supported for remote files only.'))); }
                 }, 
                 child: const Text('OK', style: TextStyle(color: Colors.lightBlueAccent))
