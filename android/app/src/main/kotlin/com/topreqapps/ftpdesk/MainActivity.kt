@@ -143,7 +143,14 @@ class MainActivity: FlutterActivity() {
 
     private suspend fun handleList(path: String, result: MethodChannel.Result) {
         ftpClient?.changeWorkingDirectory(path)
-        val files = ftpClient?.listFiles() ?: emptyArray()
+        
+        // MLSD komutu ile detaylı ve tarihli liste çekmeyi deneriz
+        var files = ftpClient?.mlistDir() ?: emptyArray()
+        
+        // Desteklemiyorsa klasik listFiles() yöntemine düşeriz
+        if (files.isEmpty()) {
+            files = ftpClient?.listFiles() ?: emptyArray()
+        }
         
         val list = files.map { file ->
             var perms = 0
@@ -157,11 +164,13 @@ class MainActivity: FlutterActivity() {
             if (file.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.WRITE_PERMISSION)) perms = perms or 2
             if (file.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.EXECUTE_PERMISSION)) perms = perms or 1
 
+            val timestamp = file.timestamp?.timeInMillis ?: 0L
+
             mapOf(
-                "name" to file.name, 
+                "name" to (file.name ?: ""), 
                 "isDir" to file.isDirectory, 
                 "size" to file.size,
-                "modified" to (file.timestamp?.timeInMillis ?: 0L),
+                "modified" to timestamp,
                 "owner" to (file.user ?: ""),
                 "group" to (file.group ?: ""),
                 "permissions" to perms
