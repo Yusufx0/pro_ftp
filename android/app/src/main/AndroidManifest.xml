@@ -11,7 +11,7 @@
         <!-- ADMOB UYGULAMA KİMLİĞİ (Şu an Test ID'si eklidir. Yayına çıkarken kendi App ID'n ile değiştir) -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-3940256099942544~3347511713"/>
+            android:value="ca-app-pub-1263489003546766~6100334405"/>
             
         <activity
             android:name=".MainActivity"
