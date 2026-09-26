@@ -18,7 +18,7 @@ plugins {
 
 android {
     namespace = "com.topreqapps.ftpdesk"
-    compileSdk = 37
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -29,7 +29,7 @@ android {
     defaultConfig {
         applicationId = "com.topreqapps.ftpdesk"
         minSdk = flutter.minSdkVersion
-        targetSdk = 37
+        targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
