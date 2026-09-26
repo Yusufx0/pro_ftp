@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -131,6 +130,14 @@ class RemoteEntry {
     this.group = '', 
     this.permissions = 0
   });
+}
+
+class TransferTask {
+  final String localPath;
+  final String remotePath;
+  final bool isDir;
+  final int size;
+  TransferTask(this.localPath, this.remotePath, this.isDir, this.size);
 }
 
 String formatBytes(int bytes) {
@@ -1170,6 +1177,35 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
   }
 
+  Future<void> _deleteRemoteRecursive(String rPath, bool isDir) async {
+    if (!isDir) {
+        if (_isSftp) await _sftpClient!.remove(rPath);
+        else await NativeFtpClient.delete(rPath, false);
+        return;
+    }
+    List<RemoteEntry> contents = [];
+    try {
+        if (_isSftp) {
+            final items = await _sftpClient!.listdir(rPath);
+            for(var e in items) {
+                if (e.filename != '.' && e.filename != '..') {
+                    contents.add(RemoteEntry(name: e.filename, isDir: e.attr.isDirectory, size: 0));
+                }
+            }
+        } else {
+            contents = await NativeFtpClient.list(rPath);
+        }
+    } catch(e) {}
+    
+    for (var c in contents) {
+        String childRemote = rPath.endsWith('/') ? '$rPath${c.name}' : '$rPath/${c.name}';
+        await _deleteRemoteRecursive(childRemote, c.isDir);
+    }
+    
+    if (_isSftp) await _sftpClient!.rmdir(rPath);
+    else await NativeFtpClient.delete(rPath, true);
+  }
+
   Future<void> _deleteItems(List<String> items, bool isLocal) async {
     if (items.isEmpty) return;
 
@@ -1204,28 +1240,13 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         _loadLocal(localPath);
       } else {
         bool connectionLost = false;
+        setState(() { remoteLoading = true; }); 
+        
         for (String name in items) {
           String remoteItemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
           bool isKnownDir = remoteFiles.any((e) => e.name == name && e.isDir);
-
           try {
-            if (_isSftp) {
-              if (isKnownDir) {
-                await _sftpClient!.rmdir(remoteItemPath);
-              } else {
-                try {
-                   await _sftpClient!.remove(remoteItemPath);
-                } catch(e) {
-                   await _sftpClient!.rmdir(remoteItemPath);
-                }
-              }
-            } else {
-               try {
-                 await NativeFtpClient.delete(remoteItemPath, isKnownDir);
-               } catch(e) {
-                 await NativeFtpClient.delete(remoteItemPath, !isKnownDir);
-               }
-            }
+            await _deleteRemoteRecursive(remoteItemPath, isKnownDir);
           } catch (e) {
             if (_isConnectionError(e)) connectionLost = true;
           }
@@ -1402,7 +1423,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     int currentFileIndex = 0;
     int currentTransferred = 0;
     int currentTotal = 0;
+    int totalFilesToTransfer = 0;
     DateTime startTime = DateTime.now();
+    bool isPreparing = true;
     StateSetter? dialogSetState;
 
     void updateDialog(int transferred, int total) {
@@ -1422,6 +1445,23 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       builder: (c) => StatefulBuilder(
         builder: (context, setState) {
           dialogSetState = setState;
+
+          if (isPreparing) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF2A2E35),
+              content: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+                child: Row(
+                  children: const [
+                    CircularProgressIndicator(color: Colors.lightBlueAccent),
+                    SizedBox(width: 20),
+                    Text('Preparing transfer...', style: TextStyle(color: Colors.white, fontSize: 16))
+                  ],
+                ),
+              ),
+            );
+          }
+
           double speedKBps = 0;
           String speedStr = "0 KB/s";
           String elapsedStr = "0s";
@@ -1476,7 +1516,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('$currentFileIndex/${itemsToTransfer.length}', style: const TextStyle(color: Colors.white70)),
+                      Text('$currentFileIndex/$totalFilesToTransfer', style: const TextStyle(color: Colors.white70)),
                       Text(speedStr, style: const TextStyle(color: Colors.white70)),
                     ],
                   ),
@@ -1523,93 +1563,164 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     );
 
     try {
-      for (int i = 0; i < itemsToTransfer.length; i++) {
-        if (isTransferCancelled) break;
-        String item = itemsToTransfer[i];
-        
-        startTime = DateTime.now();
-        currentTransferred = 0;
-        currentTotal = 0;
-        currentFileName = isLocal ? File(item).path.split('/').last : item;
-        currentFileIndex = i + 1;
-        updateDialog(0, 0);
+      List<TransferTask> tasks = [];
 
-        try {
-          if (isLocal) {
-            File file = File(item);
-            if (await file.exists()) {
-              currentTotal = file.lengthSync();
-              updateDialog(0, currentTotal);
-
-              String fileName = file.path.split('/').last;
-              String remoteItemPath = remotePath == '/' ? '/$fileName' : '$remotePath/$fileName';
-
-              if (_isSftp) {
-                final remoteFile = await _sftpClient!.open(remoteItemPath, mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
-                Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
-                   await for (var chunk in source) {
-                      if (isTransferCancelled) throw Exception("CANCELLED");
-                      currentTransferred += chunk.length;
-                      updateDialog(currentTransferred, currentTotal);
-                      yield Uint8List.fromList(chunk);
-                   }
-                }
-                await remoteFile.write(progressStream(file.openRead()));
-                await remoteFile.close(); 
-                successCount++;
+      if (isLocal) {
+          for (String item in itemsToTransfer) {
+              String baseName = item.split('/').last;
+              String baseRemote = remotePath == '/' ? '/$baseName' : '$remotePath/$baseName';
+              
+              if (FileSystemEntity.isDirectorySync(item)) {
+                  tasks.add(TransferTask(item, baseRemote, true, 0));
+                  var entities = Directory(item).listSync(recursive: true);
+                  for (var e in entities) {
+                      String relPath = e.path.substring(item.length + 1).replaceAll('\\', '/');
+                      String childRemote = '$baseRemote/$relPath'.replaceAll('//', '/');
+                      bool isSubDir = FileSystemEntity.isDirectorySync(e.path);
+                      int size = isSubDir ? 0 : File(e.path).lengthSync();
+                      tasks.add(TransferTask(e.path, childRemote, isSubDir, size));
+                  }
               } else {
-                await NativeFtpClient.upload(file.path, remoteItemPath);
-                if(!isTransferCancelled) successCount++;
+                  int size = File(item).lengthSync();
+                  tasks.add(TransferTask(item, baseRemote, false, size));
               }
-            }
-          } else {
-            String remoteItemPath = remotePath == '/' ? '/$item' : '$remotePath/$item';
-            
-            if (_isSftp) {
-               final fileStat = await _sftpClient!.stat(remoteItemPath);
-               currentTotal = fileStat.size ?? 0;
-               updateDialog(0, currentTotal);
+          }
+      } else {
+          Future<void> buildRemoteTasks(String rPath, String lPath) async {
+              if (isTransferCancelled) return;
+              List<RemoteEntry> contents = [];
+              try {
+                  if (_isSftp) {
+                      final items = await _sftpClient!.listdir(rPath);
+                      for(var e in items) {
+                          if (e.filename != '.' && e.filename != '..') {
+                              contents.add(RemoteEntry(name: e.filename, isDir: e.attr.isDirectory, size: e.attr.size ?? 0));
+                          }
+                      }
+                  } else {
+                      contents = await NativeFtpClient.list(rPath);
+                  }
+              } catch(e) {
+                  if (_isConnectionError(e)) connectionLost = true;
+              }
+              
+              for (var c in contents) {
+                  if (isTransferCancelled) break;
+                  String childRemote = rPath.endsWith('/') ? '$rPath${c.name}' : '$rPath/${c.name}';
+                  String childLocal = '$lPath/${c.name}';
+                  
+                  tasks.add(TransferTask(childLocal, childRemote, c.isDir, c.size));
+                  if (c.isDir) {
+                      await buildRemoteTasks(childRemote, childLocal);
+                  }
+              }
+          }
 
-               final remoteFile = await _sftpClient!.open(remoteItemPath); 
-               final localFile = File('$localPath/$item'); 
-               final sink = localFile.openWrite();
+          for (String name in itemsToTransfer) {
+               String rPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
+               String lPath = '$localPath/$name';
                
-               await for (var chunk in remoteFile.read()) { 
-                  if (isTransferCancelled) throw Exception("CANCELLED");
-                  sink.add(chunk); 
-                  currentTransferred += chunk.length;
-                  updateDialog(currentTransferred, currentTotal);
-               } 
-               await sink.close(); 
-               await remoteFile.close();
-               if (!isTransferCancelled) successCount++;
-            } else {
-               await NativeFtpClient.download(remoteItemPath, '$localPath/$item'); 
-               if(!isTransferCancelled) successCount++; 
-            }
+               bool isDir = remoteFiles.any((e) => e.name == name && e.isDir);
+               int size = 0;
+               if (!isDir) size = remoteFiles.firstWhere((e) => e.name == name).size;
+               
+               tasks.add(TransferTask(lPath, rPath, isDir, size));
+               if (isDir) {
+                   await buildRemoteTasks(rPath, lPath);
+               }
           }
-        } catch (e) {
-          String errStr = e.toString();
-          if (errStr.contains('CANCELLED')) {
-             isTransferCancelled = true;
-          } else if (_isConnectionError(e)) {
-             connectionLost = true;
-          } else {
-             if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(errStr, style: const TextStyle(color: Colors.white)),
-                  backgroundColor: Colors.redAccent,
-                  duration: const Duration(seconds: 4),
-                ));
-             }
+      }
+
+      if (connectionLost || isTransferCancelled) throw Exception("CANCELLED");
+
+      totalFilesToTransfer = tasks.where((t) => !t.isDir).length;
+      if (totalFilesToTransfer == 0 && tasks.isNotEmpty) totalFilesToTransfer = tasks.length; 
+
+      if (mounted && dialogSetState != null) {
+          dialogSetState!(() { isPreparing = false; });
+      }
+
+      for (var task in tasks) {
+          if (isTransferCancelled) break;
+          
+          if (task.isDir) {
+              if (isLocal) {
+                  try {
+                      if (_isSftp) await _sftpClient!.mkdir(task.remotePath);
+                      else await NativeFtpClient.makeDirectory(task.remotePath);
+                  } catch(e) {} 
+              } else {
+                  try { Directory(task.localPath).createSync(recursive: true); } catch(e) {}
+              }
+              if (totalFilesToTransfer == tasks.length) successCount++;
+              continue;
           }
-        }
+
+          startTime = DateTime.now();
+          currentTransferred = 0;
+          currentTotal = task.size;
+          currentFileName = task.localPath.split('/').last;
+          currentFileIndex++;
+          updateDialog(0, currentTotal);
+
+          try {
+              if (isLocal) {
+                  if (_isSftp) {
+                      final remoteFile = await _sftpClient!.open(task.remotePath, mode: SftpFileOpenMode.create | SftpFileOpenMode.write);
+                      Stream<Uint8List> progressStream(Stream<List<int>> source) async* {
+                         await for (var chunk in source) {
+                            if (isTransferCancelled) throw Exception("CANCELLED");
+                            currentTransferred += chunk.length;
+                            updateDialog(currentTransferred, currentTotal);
+                            yield Uint8List.fromList(chunk);
+                         }
+                      }
+                      await remoteFile.write(progressStream(File(task.localPath).openRead()));
+                      await remoteFile.close(); 
+                      successCount++;
+                  } else {
+                      await NativeFtpClient.upload(task.localPath, task.remotePath);
+                      if(!isTransferCancelled) successCount++;
+                  }
+              } else {
+                  if (_isSftp) {
+                     final remoteFile = await _sftpClient!.open(task.remotePath); 
+                     final sink = File(task.localPath).openWrite();
+                     
+                     await for (var chunk in remoteFile.read()) { 
+                        if (isTransferCancelled) throw Exception("CANCELLED");
+                        sink.add(chunk); 
+                        currentTransferred += chunk.length;
+                        updateDialog(currentTransferred, currentTotal);
+                     } 
+                     await sink.close(); 
+                     await remoteFile.close();
+                     if (!isTransferCancelled) successCount++;
+                  } else {
+                     await NativeFtpClient.download(task.remotePath, task.localPath); 
+                     if(!isTransferCancelled) successCount++; 
+                  }
+              }
+          } catch (e) {
+              if (e.toString().contains('CANCELLED')) isTransferCancelled = true;
+              else if (_isConnectionError(e)) connectionLost = true;
+              else {
+                  if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(e.toString(), style: const TextStyle(color: Colors.white)),
+                        backgroundColor: Colors.redAccent,
+                        duration: const Duration(seconds: 4),
+                      ));
+                  }
+              }
+          }
       }
     } finally {
       _isTransferring = false;
+      if (mounted && Navigator.canPop(context)) {
+         Navigator.pop(context); 
+      }
     }
-
-    if (mounted) Navigator.pop(context);
 
     if (isLocal) { _selectedLocalPaths.clear(); _goToRemotePath(remotePath); } 
     else { _selectedRemoteNames.clear(); _loadLocal(localPath); }
@@ -1618,10 +1729,10 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       _showDisconnectDialog();
     } else if (isTransferCancelled) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transfer cancelled')));
-    } else if (successCount > 0) {
+    } else if (successCount > 0 || isLocal == false) {
       showDialog(context: context, builder: (c) => AlertDialog(
           title: const Text('Transfer Complete', style: TextStyle(color: Colors.lightBlueAccent)),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred: $successCount / ${itemsToTransfer.length} items'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Successfully transferred items.'), const SizedBox(height: 10), const LinearProgressIndicator(value: 1.0, color: Colors.lightBlueAccent, backgroundColor: Colors.grey)]),
           actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
         )
       );
