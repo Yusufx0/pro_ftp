@@ -116,8 +116,20 @@ class RemoteEntry {
   final String name;
   final bool isDir;
   final int size;
+  final DateTime? modified;
+  final String owner;
+  final String group;
+  final int permissions;
 
-  RemoteEntry({required this.name, required this.isDir, required this.size});
+  RemoteEntry({
+    required this.name, 
+    required this.isDir, 
+    required this.size,
+    this.modified, 
+    this.owner = '', 
+    this.group = '', 
+    this.permissions = 0
+  });
 }
 
 String formatBytes(int bytes) {
@@ -171,11 +183,25 @@ class NativeFtpClient {
 
   static Future<List<RemoteEntry>> list(String path) async {
     final List<dynamic> res = await platform.invokeMethod('list', {'path': path});
-    return res.map((e) => RemoteEntry(
-      name: e['name'],
-      isDir: e['isDir'],
-      size: e['size'],
-    )).where((e) => e.name != '.' && e.name != '..' && e.name.trim().isNotEmpty).toList();
+    return res.map((e) {
+      DateTime? modTime;
+      if (e['modified'] != null && e['modified'] > 0) {
+        modTime = DateTime.fromMillisecondsSinceEpoch(e['modified']);
+      }
+      return RemoteEntry(
+        name: e['name'], 
+        isDir: e['isDir'], 
+        size: e['size'],
+        modified: modTime, 
+        owner: e['owner'] ?? '', 
+        group: e['group'] ?? '', 
+        permissions: e['permissions'] ?? 0,
+      );
+    }).where((e) => e.name != '.' && e.name != '..' && e.name.trim().isNotEmpty).toList();
+  }
+
+  static Future<void> chmod(String path, String perms) async {
+    await platform.invokeMethod('chmod', {'path': path, 'perms': perms});
   }
 
   static Future<void> changeDirectory(String path) async {
@@ -740,7 +766,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     else localPath = '/storage/emulated/0';
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
     
-    // BURASI DEĞİŞTİ: initialIndex: 1 eklenerek varsayılan sekme Remote (1) yapıldı.
     _tabController = TabController(length: 2, vsync: this, initialIndex: 1);
     
     _tabController.addListener(() => setState(() {
@@ -999,9 +1024,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         final content = await _sftpClient!.listdir(fetchPath == '/' ? '.' : fetchPath).timeout(const Duration(seconds: 15));
         for (var e in content) {
           if (e.filename == '.' || e.filename == '..') continue;
-          final isDir = e.attr.isDirectory;
-          final entry = RemoteEntry(name: e.filename, isDir: isDir, size: e.attr.size ?? 0);
-          if (isDir) folders.add(entry); else files.add(entry);
+          DateTime? modTime; 
+          if (e.attr.modifyTime != null) modTime = DateTime.fromMillisecondsSinceEpoch(e.attr.modifyTime! * 1000);
+          final entry = RemoteEntry(
+            name: e.filename, 
+            isDir: e.attr.isDirectory, 
+            size: e.attr.size ?? 0, 
+            modified: modTime, 
+            owner: e.attr.uid?.toString() ?? '', 
+            group: e.attr.gid?.toString() ?? '', 
+            permissions: e.attr.permissions ?? 0
+          );
+          if (entry.isDir) folders.add(entry); else files.add(entry);
         }
       } else {
         final content = await NativeFtpClient.list(fetchPath);
@@ -1011,10 +1045,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
       }
       
       _sortRemoteFiles(folders, files);
-      final resultList = [...folders, ...files];
-
+      
       if (mounted && remotePath == fetchPath) {
-        setState(() { remoteFiles = resultList; remoteLoading = false; _selectedRemoteNames.clear(); });
+        setState(() { remoteFiles = [...folders, ...files]; remoteLoading = false; _selectedRemoteNames.clear(); });
       }
     } catch (e) {
       if (!silent && _isConnectionError(e)) _showDisconnectDialog(); 
@@ -1188,28 +1221,120 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     }
   }
 
-  void _showProperties(String pathOrName, String size, bool isDir, bool isLocal) {
-    String name = isLocal ? pathOrName.split('/').last : pathOrName; String modified = 'N/A';
-    if (isLocal) { try { modified = FileStat.statSync(pathOrName).modified.toString().split('.').first; } catch (_) {} }
+  void _showProperties(dynamic item, bool isLocal) {
+    String name = ''; bool isDir = false; String sizeStr = '0 B'; DateTime? modifiedTime;
+    String owner = ''; String group = ''; int perms = 0;
+
+    if (isLocal) {
+      name = item.path.split('/').last; isDir = FileSystemEntity.isDirectorySync(item.path);
+      try {
+        FileStat stat = FileStat.statSync(item.path);
+        sizeStr = isDir ? "" : formatBytes(stat.size); modifiedTime = stat.modified;
+        perms = stat.mode & 0x1FF;
+      } catch (_) {}
+    } else {
+      RemoteEntry entry = item;
+      name = entry.name; isDir = entry.isDir; sizeStr = isDir ? "" : formatBytes(entry.size);
+      modifiedTime = entry.modified; owner = entry.owner; group = entry.group; perms = entry.permissions;
+    }
+
+    String formatDate(DateTime? date) {
+      if (date == null) return 'N/A';
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      String d = date.day.toString().padLeft(2, '0'); 
+      String m = months[date.month - 1]; 
+      String y = date.year.toString();
+      String hr = date.hour.toString().padLeft(2, '0'); 
+      String mn = date.minute.toString().padLeft(2, '0'); 
+      String sc = date.second.toString().padLeft(2, '0');
+      return '$d $m $y $hr:$mn:$sc';
+    }
+
+    bool oR = (perms & 256) != 0; bool oW = (perms & 128) != 0; bool oX = (perms & 64) != 0;
+    bool gR = (perms & 32) != 0; bool gW = (perms & 16) != 0; bool gX = (perms & 8) != 0;
+    bool otR = (perms & 4) != 0; bool otW = (perms & 2) != 0; bool otX = (perms & 1) != 0;
+
     showDialog(context: context, builder: (context) {
-        return AlertDialog(
-          title: const Text('File properties', style: TextStyle(color: Colors.lightBlueAccent)),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Name: $name'), const SizedBox(height: 4), Text('Type: ${isDir ? "Directory" : "File"}'), const SizedBox(height: 4), Text('Size: $size'), const SizedBox(height: 4), Text('Modified: $modified')]),
-          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
-        );
-      }
-    );
+      return StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2E35),
+            titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('File properties', style: TextStyle(color: Colors.lightBlueAccent, fontSize: 18)),
+                const SizedBox(height: 8),
+                Container(height: 1, color: Colors.lightBlueAccent),
+                const SizedBox(height: 16),
+              ],
+            ),
+            contentPadding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Name: $name', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 6),
+                  Text('Type: ${isDir ? "Directory" : "File"}', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 6),
+                  if (!isDir) ...[Text('Size: $sizeStr', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 6)],
+                  Text('Modified: ${formatDate(modifiedTime)}', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 12),
+                  if (!isLocal && (owner.isNotEmpty || group.isNotEmpty)) ...[
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Owner: $owner', style: const TextStyle(color: Colors.white70)), Text('Group: $group', style: const TextStyle(color: Colors.white70))]),
+                    const SizedBox(height: 12),
+                  ],
+                  Table(
+                    columnWidths: const { 0: FlexColumnWidth(1.5), 1: FlexColumnWidth(1), 2: FlexColumnWidth(1), 3: FlexColumnWidth(1) },
+                    children: [
+                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Owner', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oR, onChanged: (v) => setState(() => oR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oW, onChanged: (v) => setState(() => oW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: oX, onChanged: (v) => setState(() => oX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Group', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gR, onChanged: (v) => setState(() => gR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gW, onChanged: (v) => setState(() => gW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: gX, onChanged: (v) => setState(() => gX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                      TableRow(children: [const Padding(padding: EdgeInsets.only(top: 14), child: Text('Other', style: TextStyle(color: Colors.white70))), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otR, onChanged: (v) => setState(() => otR = v!)), const Text('R', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otW, onChanged: (v) => setState(() => otW = v!)), const Text('W', style: TextStyle(color: Colors.white))]), Row(children: [Checkbox(activeColor: Colors.lightBlueAccent, value: otX, onChanged: (v) => setState(() => otX = v!)), const Text('X', style: TextStyle(color: Colors.white))])]),
+                    ]
+                  )
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel', style: TextStyle(color: Colors.white))),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  if (!isLocal) {
+                    int ownerP = (oR ? 4 : 0) + (oW ? 2 : 0) + (oX ? 1 : 0);
+                    int groupP = (gR ? 4 : 0) + (gW ? 2 : 0) + (gX ? 1 : 0);
+                    int otherP = (otR ? 4 : 0) + (otW ? 2 : 0) + (otX ? 1 : 0);
+                    String octalPerms = '$ownerP$groupP$otherP';
+                    
+                    String itemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
+                    try {
+                      if (_isSftp) await _sftpClient!.setstat(itemPath, SftpFileAttrs(permissions: int.parse(octalPerms, radix: 8)));
+                      else await NativeFtpClient.chmod(itemPath, octalPerms);
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Permissions updated to $octalPerms')));
+                      _goToRemotePath(remotePath); 
+                    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: Server may not support CHMOD'))); }
+                  } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permission edits supported for remote files only.'))); }
+                }, 
+                child: const Text('OK', style: TextStyle(color: Colors.lightBlueAccent))
+              ),
+            ],
+          );
+        }
+      );
+    });
   }
 
-  void _showContextMenu(String pathOrName, String sizeStr, bool isLocal, bool isDir) {
+  void _showContextMenu(dynamic item, bool isLocal) {
+    bool isDir = isLocal ? FileSystemEntity.isDirectorySync(item.path) : item.isDir;
+    String pathOrName = isLocal ? item.path : item.name;
+    String name = isLocal ? item.path.split('/').last : item.name;
+
     showDialog(context: context, builder: (context) {
         return SimpleDialog(
-          title: Text(isLocal ? pathOrName.split('/').last : pathOrName, style: const TextStyle(fontSize: 16, color: Colors.blueAccent)),
+          title: Text(name, style: const TextStyle(fontSize: 16, color: Colors.blueAccent)),
           children: [
             SimpleDialogOption(onPressed: () { Navigator.pop(context); _selectedLocalPaths.clear(); _selectedRemoteNames.clear(); if(isLocal) { _selectedLocalPaths.add(pathOrName); } else { _selectedRemoteNames.add(pathOrName); } _transferSelectedItems(); }, child: Text(isLocal ? 'Upload' : 'Download')),
             SimpleDialogOption(onPressed: () { Navigator.pop(context); _renameItem(pathOrName, isLocal); }, child: const Text('Rename')),
             SimpleDialogOption(onPressed: () { Navigator.pop(context); _deleteItems([pathOrName], isLocal); }, child: const Text('Delete')),
-            SimpleDialogOption(onPressed: () { Navigator.pop(context); _showProperties(pathOrName, sizeStr, isDir, isLocal); }, child: const Text('Properties')),
+            SimpleDialogOption(onPressed: () { Navigator.pop(context); _showProperties(item, isLocal); }, child: const Text('Properties')),
           ],
         );
       }
@@ -1487,11 +1612,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     controller: _pathEditCtrl,
                     focusNode: _pathFocusNode,
                     style: const TextStyle(color: Colors.white, fontSize: 14),
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      hintText: 'Enter path...',
-                      hintStyle: TextStyle(color: Colors.white54),
-                    ),
+                    decoration: const InputDecoration(border: InputBorder.none, hintText: 'Enter path...', hintStyle: TextStyle(color: Colors.white54)),
                     textInputAction: TextInputAction.go, 
                     onSubmitted: (val) {
                       setState(() => _isEditingPath = false);
@@ -1502,32 +1623,18 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
               : GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () {
-                    setState(() {
-                      _isEditingPath = true;
-                      _pathEditCtrl.text = isLocal ? localPath : remotePath;
-                    });
-                    Future.delayed(const Duration(milliseconds: 50), () {
-                      if (mounted) _pathFocusNode.requestFocus();
-                    });
+                    setState(() { _isEditingPath = true; _pathEditCtrl.text = isLocal ? localPath : remotePath; });
+                    Future.delayed(const Duration(milliseconds: 50), () { if (mounted) _pathFocusNode.requestFocus(); });
                   },
                   child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+                    width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
                     alignment: Alignment.centerLeft,
-                    child: Text(
-                      isLocal ? localPath : remotePath,
-                      style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    child: Text(isLocal ? localPath : remotePath, style: const TextStyle(fontSize: 14, decoration: TextDecoration.underline), maxLines: 1, overflow: TextOverflow.ellipsis),
                   ),
                 ),
           actions: [
             if (_isEditingPath)
-              IconButton(
-                icon: const Icon(Icons.close), 
-                onPressed: () => setState(() => _isEditingPath = false),
-              )
+              IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _isEditingPath = false))
             else
               PopupMenuButton<String>(
                 onSelected: (value) {
@@ -1549,13 +1656,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         body: Column(
           children: [
             if (_isBannerAdLoaded && _bannerAd != null)
-              Container(
-                color: Colors.black, 
-                width: _bannerAd!.size.width.toDouble(),
-                height: _bannerAd!.size.height.toDouble(),
-                alignment: Alignment.center,
-                child: AdWidget(ad: _bannerAd!),
-              ),
+              Container(color: Colors.black, width: _bannerAd!.size.width.toDouble(), height: _bannerAd!.size.height.toDouble(), alignment: Alignment.center, child: AdWidget(ad: _bannerAd!)),
             
             Container(
               color: const Color(0xFF000000),
@@ -1563,28 +1664,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                 controller: _tabController, 
                 indicatorColor: Colors.lightBlueAccent, 
                 labelPadding: EdgeInsets.zero,
-                tabs: [
-                  Tab(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.home, size: 18), 
-                        SizedBox(width: 6), 
-                        Text('LOCAL')
-                      ],
-                    ),
-                  ), 
-                  Tab(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(Icons.public, size: 18), 
-                        SizedBox(width: 6), 
-                        Text('REMOTE')
-                      ],
-                    ),
-                  )
-                ]
+                tabs: const [Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.home, size: 18), SizedBox(width: 6), Text('LOCAL')])), Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.public, size: 18), SizedBox(width: 6), Text('REMOTE')]))]
               ),
             ),
             
@@ -1614,7 +1694,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(name),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedLocalPaths.contains(entity.path), onChanged: (bool? value) { setState(() { if (value == true) _selectedLocalPaths.add(entity.path); else _selectedLocalPaths.remove(entity.path); }); })]),
           onTap: () { if (isDir) _loadLocal(entity.path); else { setState(() { if (_selectedLocalPaths.contains(entity.path)) _selectedLocalPaths.remove(entity.path); else _selectedLocalPaths.add(entity.path); }); } },
-          onLongPress: () { _showContextMenu(entity.path, sizeStr, true, isDir); },
+          onLongPress: () { _showContextMenu(entity, true); },
         );
       },
     );
@@ -1632,7 +1712,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           dense: true, leading: Icon(isDir ? Icons.folder : Icons.insert_drive_file, color: isDir ? Colors.blue[300] : Colors.white70), title: Text(entry.name),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [if (!isDir) Text(sizeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)), Checkbox(activeColor: Colors.blueAccent, value: _selectedRemoteNames.contains(entry.name), onChanged: (bool? value) { setState(() { if (value == true) _selectedRemoteNames.add(entry.name); else _selectedRemoteNames.remove(entry.name); }); })]),
           onTap: () { if (isDir) _changeRemoteDirectory(entry.name); else { setState(() { if (_selectedRemoteNames.contains(entry.name)) _selectedRemoteNames.remove(entry.name); else _selectedRemoteNames.add(entry.name); }); } },
-          onLongPress: () { _showContextMenu(entry.name, sizeStr, false, isDir); },
+          onLongPress: () { _showContextMenu(entry, false); },
         );
       },
     );
