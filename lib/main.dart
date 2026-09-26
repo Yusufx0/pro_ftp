@@ -1026,6 +1026,12 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
           if (e.filename == '.' || e.filename == '..') continue;
           DateTime? modTime; 
           if (e.attr.modifyTime != null) modTime = DateTime.fromMillisecondsSinceEpoch(e.attr.modifyTime! * 1000);
+          
+          int parsedMode = 0;
+          if (e.attr.mode != null) {
+            parsedMode = int.tryParse(e.attr.mode.toString()) ?? 0;
+          }
+
           final entry = RemoteEntry(
             name: e.filename, 
             isDir: e.attr.isDirectory, 
@@ -1033,7 +1039,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
             modified: modTime, 
             owner: '', 
             group: '', 
-            permissions: e.attr.mode ?? 0
+            permissions: parsedMode
           );
           if (entry.isDir) folders.add(entry); else files.add(entry);
         }
@@ -1307,7 +1313,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
                     String itemPath = remotePath == '/' ? '/$name' : '$remotePath/$name';
                     try {
                       if (_isSftp) {
-                        await _sftpClient!.setStat(itemPath, SftpFileAttrs(mode: int.parse(octalPerms, radix: 8)));
+                        await _sftpClient!.setStat(itemPath, SftpFileAttrs(mode: SftpFileMode(int.parse(octalPerms, radix: 8))));
                       } else {
                         await NativeFtpClient.chmod(itemPath, octalPerms);
                       }
