@@ -11,6 +11,9 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:in_app_update/in_app_update.dart';
+import 'package:firebase_remote_config/firebase_remote_config.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -265,6 +268,34 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _loadProfiles();
+    _checkForUpdate();
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (!Platform.isAndroid) return;
+
+    try {
+      PackageInfo packageInfo = await PackageInfo.fromPlatform();
+      int currentVersion = int.tryParse(packageInfo.buildNumber) ?? 1;
+
+      final remoteConfig = FirebaseRemoteConfig.instance;
+      await remoteConfig.setConfigSettings(RemoteConfigSettings(
+        fetchTimeout: const Duration(seconds: 10),
+        minimumFetchInterval: const Duration(hours: 1),
+      ));
+      await remoteConfig.fetchAndActivate();
+      
+      int minVersion = remoteConfig.getInt('min_version_code');
+
+      if (currentVersion < minVersion) {
+        AppUpdateInfo updateInfo = await InAppUpdate.checkForUpdate();
+        if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable) {
+          await InAppUpdate.performImmediateUpdate();
+        }
+      }
+    } catch (e) {
+      print("Güncelleme kontrol hatası: $e");
+    }
   }
 
   @override
