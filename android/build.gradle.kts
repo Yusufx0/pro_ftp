@@ -7,6 +7,9 @@ buildscript {
         // AdMob ve yeni nesil Gradle (9.x) ile uyumluluk için sürümler sabitlendi
         classpath("com.android.tools.build:gradle:8.3.2")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+        
+        // Firebase entegrasyonu için Google Services eklendi:
+        classpath("com.google.gms:google-services:4.4.1")
     }
 }
 
