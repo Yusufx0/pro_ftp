@@ -7,6 +7,7 @@ import kotlinx.coroutines.*
 import org.apache.commons.net.ftp.FTP
 import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPSClient
+import org.apache.commons.net.ftp.FTPFile
 import org.apache.commons.net.io.CopyStreamAdapter
 import java.io.File
 import java.io.FileInputStream
@@ -76,6 +77,13 @@ class MainActivity: FlutterActivity() {
                             if(!success) throw Exception("Rename failed")
                             withContext(Dispatchers.Main) { result.success(null) }
                         }
+                        "chmod" -> {
+                            val path = call.argument<String>("path") ?: ""
+                            val perms = call.argument<String>("perms") ?: "755"
+                            val success = ftpClient?.sendSiteCommand("CHMOD $perms $path") ?: false
+                            if(!success) throw Exception("CHMOD failed. Server may not support it.")
+                            withContext(Dispatchers.Main) { result.success(null) }
+                        }
                         "upload" -> handleUpload(call.arguments as Map<String, Any>, result)
                         "download" -> handleDownload(call.arguments as Map<String, Any>, result)
                         else -> withContext(Dispatchers.Main) { result.notImplemented() }
@@ -138,7 +146,26 @@ class MainActivity: FlutterActivity() {
         val files = ftpClient?.listFiles() ?: emptyArray()
         
         val list = files.map { file ->
-            mapOf("name" to file.name, "isDir" to file.isDirectory, "size" to file.size)
+            var perms = 0
+            if (file.hasPermission(FTPFile.USER_ACCESS, FTPFile.READ_PERMISSION)) perms = perms or 256
+            if (file.hasPermission(FTPFile.USER_ACCESS, FTPFile.WRITE_PERMISSION)) perms = perms or 128
+            if (file.hasPermission(FTPFile.USER_ACCESS, FTPFile.EXECUTE_PERMISSION)) perms = perms or 64
+            if (file.hasPermission(FTPFile.GROUP_ACCESS, FTPFile.READ_PERMISSION)) perms = perms or 32
+            if (file.hasPermission(FTPFile.GROUP_ACCESS, FTPFile.WRITE_PERMISSION)) perms = perms or 16
+            if (file.hasPermission(FTPFile.GROUP_ACCESS, FTPFile.EXECUTE_PERMISSION)) perms = perms or 8
+            if (file.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.READ_PERMISSION)) perms = perms or 4
+            if (file.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.WRITE_PERMISSION)) perms = perms or 2
+            if (file.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.EXECUTE_PERMISSION)) perms = perms or 1
+
+            mapOf(
+                "name" to file.name, 
+                "isDir" to file.isDirectory, 
+                "size" to file.size,
+                "modified" to (file.timestamp?.timeInMillis ?: 0L),
+                "owner" to (file.user ?: ""),
+                "group" to (file.group ?: ""),
+                "permissions" to perms
+            )
         }
         withContext(Dispatchers.Main) { result.success(list) }
     }
