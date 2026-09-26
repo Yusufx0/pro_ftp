@@ -23,7 +23,7 @@ class FtpProApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Ftp Core',
+      title: 'Ftp Desk',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -362,7 +362,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Row(children: [Icon(Icons.public, color: Colors.blueAccent), SizedBox(width: 8), Text('Ftp Core')]),
+        title: const Row(children: [Icon(Icons.public, color: Colors.blueAccent), SizedBox(width: 8), Text('Ftp Desk')]),
         actions: [IconButton(icon: const Icon(Icons.more_vert), onPressed: () {})],
       ),
       body: SafeArea(
@@ -722,7 +722,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   Timer? _keepAliveTimer;
   bool _isAppPaused = false;
   
-  bool _isTransferring = false; // BAĞLANTIYI KOPARMAYAN KİLİT
+  bool _isTransferring = false; 
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
@@ -740,7 +740,9 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     else localPath = '/storage/emulated/0';
     if (widget.profile.remotePath.isNotEmpty) remotePath = widget.profile.remotePath;
     
-    _tabController = TabController(length: 2, vsync: this);
+    // BURASI DEĞİŞTİ: initialIndex: 1 eklenerek varsayılan sekme Remote (1) yapıldı.
+    _tabController = TabController(length: 2, vsync: this, initialIndex: 1);
+    
     _tabController.addListener(() => setState(() {
       _isEditingPath = false; 
     }));
@@ -754,7 +756,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _pingServer());
   }
 
-  // UYARLANABİLİR (ADAPTIVE) DİNAMİK REKLAM BOYUTUNU HESAPLAYAN KISIM
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -810,7 +811,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
   }
   
   Future<void> _pingServer() async {
-    // BURADAKİ KİLİT SAYESİNDE ÇOKLU TRANSFER ESNASINDA PİNG ATILMAZ
     if (_isAppPaused || _isDisconnectDialogShowing || remoteLoading || remoteError.isNotEmpty || _isTransferring) return;
     try {
       bool isAlive = false;
@@ -1225,7 +1225,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
     int successCount = 0; 
     bool connectionLost = false;
 
-    // TRANSFER BAŞLIYOR, PİNG ATMAYI DURDUR
     _isTransferring = true;
     
     String currentFileName = "";
@@ -1436,7 +1435,6 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
         }
       }
     } finally {
-      // İŞLEM BİTTİĞİNDE (VEYA KOPTUĞUNDA) KİLİDİ AÇ, PİNG TEKRAR BAŞLASIN
       _isTransferring = false;
     }
 
