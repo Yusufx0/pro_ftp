@@ -847,7 +847,7 @@ class _DualFileManagerScreenState extends State<DualFileManagerScreen> with Sing
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
-  final String _adUnitId = 'ca-app-pub-1263489003546766/7584631450'; 
+  final String _adUnitId = 'ca-app-pub-4350674327281005/4301213756'; 
 
   bool _isEditingPath = false;
   late TextEditingController _pathEditCtrl;
